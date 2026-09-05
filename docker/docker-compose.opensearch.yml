@@ -1,0 +1,31 @@
+services:
+  opensearch:
+    image: opensearchproject/opensearch:latest
+    container_name: opensearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node        # 단일 노드 모드 (클러스터 아님)
+      - plugins.security.disabled=true    # 로컬 개발용, 인증/TLS 비활성화
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"  # JVM 힙 메모리 제한 (로컬 리소스 절약)
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}   # 초기 admin 비밀번호(docker/.env 참조)
+    ports:
+      - "${OPENSEARCH_PORT}:${OPENSEARCH_PORT}"    # REST API 포트
+      - "${OPENSEARCH_PERF_PORT}:${OPENSEARCH_PERF_PORT}"    # 성능 분석 API 포트
+    volumes:
+      - ./opensearch/data:/usr/share/opensearch/data
+    networks:
+      - shire-net
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:latest
+    container_name: opensearch-dashboards
+    restart: unless-stopped
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:${OPENSEARCH_PORT}"]   # 연결할 OpenSearch 주소 (서비스명 사용)
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true         # OpenSearch 쪽 보안이 꺼져있으므로 대시보드 쪽도 맞춰서 비활성화
+    ports:
+      - "${OPENSEARCH_DASHBOARDS_PORT}:${OPENSEARCH_DASHBOARDS_PORT}"     # 대시보드 웹 UI 포트
+    networks:
+      - shire-net
+    depends_on:
+      - opensearch        # opensearch가 먼저 뜬 뒤에 시작

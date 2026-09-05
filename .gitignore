@@ -1,0 +1,18 @@
+# 환경 변수
+.env
+docker/.env
+!.env.example
+!docker/.env.example
+
+
+# OS/에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 테스트 파일
+archive/
+
+# Docker 서비스 데이터 (실행 중 생성되는 볼륨 데이터)
+docker/*/data/

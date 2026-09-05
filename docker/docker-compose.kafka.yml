@@ -1,0 +1,45 @@
+services:
+  kafka:
+    image: apache/kafka:latest
+    container_name: kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"       # 클라이언트(Producer/Consumer)가 접속하는 포트
+    environment:
+      # ── 브로커 식별 및 역할 ──
+      KAFKA_NODE_ID: 1                              # 이 브로커의 고유 ID (클러스터 내에서 유일해야 함)
+      KAFKA_PROCESS_ROLES: broker,controller         # 이 노드가 broker(메시지 처리)와 controller(메타데이터 관리) 역할을 동시에 수행
+
+      # ── 리스너(수신 주소) 설정 ──
+      KAFKA_LISTENERS: CLIENT://0.0.0.0:${KAFKA_PORT},CONTROLLER://0.0.0.0:${KAFKA_CONTROLLER_PORT}
+        # CLIENT: 일반 클라이언트(Vector 등)가 붙는 리스너
+        # CONTROLLER: 브로커 간 메타데이터 통신 전용 리스너(옛 Zookeeper 역할을 대체)
+      KAFKA_ADVERTISED_LISTENERS: CLIENT://kafka:${KAFKA_PORT}
+        # 클라이언트에게 "나한테 연결하려면 이 주소로 와라"라고 알려주는 값
+        # Docker 네트워크 안이므로 localhost가 아니라 서비스명(kafka)으로 지정
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,CLIENT:PLAINTEXT
+        # 각 리스너가 어떤 보안 프로토콜을 쓸지 매핑 (지금은 둘 다 암호화 없는 PLAINTEXT)
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER    # 컨트롤러 통신에 사용할 리스너 이름 지정
+      KAFKA_INTER_BROKER_LISTENER_NAME: CLIENT       # 브로커끼리(지금은 1개뿐이지만) 통신할 때 쓸 리스너
+
+      # ── 클러스터 부트스트랩 (KRaft 모드에서 컨트롤러 투표 참여자 지정) ──
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:${KAFKA_CONTROLLER_PORT}
+        # "노드 ID 1번이 컨트롤러 투표에 참여하며, ${KAFKA_CONTROLLER_PORT} 포트로 통신한다"는 뜻
+        # 브로커가 여러 개면 "1@host1:${KAFKA_CONTROLLER_PORT},2@host2:${KAFKA_CONTROLLER_PORT},..." 형태로 나열
+
+      # ── 내부 토픽 복제 계수 (단일 브로커라 1로 설정) ──
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        # 컨슈머 그룹의 읽기 위치(offset)를 저장하는 내부 토픽의 복제 계수
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+        # 트랜잭션 상태를 저장하는 내부 토픽의 복제 계수
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+        # 트랜잭션 로그 쓰기가 성공했다고 인정하기 위한 최소 동기화 복제본 수
+
+      # ── 토픽 생성 정책 ──
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+        # 자동 생성 비활성화 - 우리가 직접 만든 토픽만 사용
+    volumes:
+      - ./kafka/data:/var/lib/kafka/data   # 로컬 폴더에 카프카 데이터 저장 (컨테이너 재생성해도 데이터 유지)
+    networks:
+      - shire-net
+      

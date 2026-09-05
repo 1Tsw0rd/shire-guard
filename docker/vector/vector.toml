@@ -1,0 +1,61 @@
+# ── Sources: 이벤트를 어디서 받을지 정의 ──────────────────────────
+# 로컬(또는 외부)에서 이벤트를 보내면 여기서 수신함
+[sources.http_in]
+type = "http_server"                # HTTP 요청으로 이벤트를 받는 소스 타입
+address = "0.0.0.0:${VECTOR_PORT}"  # 컨테이너 내부에서 수신 대기할 주소:포트
+
+[sources.http_in.decoding]
+# source는 decoding을 씀: 외부에서 들어온 raw 바이트를 구조화된 이벤트로 해독하는 단계
+codec = "json"
+
+
+# ── Transforms: 받은 이벤트를 가공(정규화/변환)하는 단계 ──────────
+# Logstash의 filter와 동일한 역할
+[transforms.normalize]
+type = "remap"             # VRL(Vector Remap Language)로 필드를 직접 조작
+inputs = ["http_in"]       # 위에서 정의한 http_in 소스로부터 이벤트를 받음
+source = '''
+.event_type = "shire_test"    # 새 필드 추가
+.source_ip = .ip              # 원본 필드(ip)를 표준 필드명(source_ip)으로 복사
+.failed_count = .failures     # 원본 필드(failures)를 표준 필드명으로 복사
+.success_count = .successes   # 원본 필드(successes)를 표준 필드명으로 복사
+del(.ip)                      # 원본 필드 삭제
+del(.failures)
+del(.successes)
+'''
+
+
+# ── Sinks: 가공된 이벤트를 최종적으로 어디로 보낼지 정의 ──────────
+# 지금은 결과를 눈으로 확인하기 위해 console(터미널 로그)로 출력
+[sinks.console_out]
+type = "console"
+inputs = ["normalize"]     # transform 결과를 받아서 출력
+encoding.codec = "json"    # sink는 encoding을 씀: 내부 이벤트를 다시 바이트/텍스트로 부호화해서 내보내는 단계
+
+# kafka 전용
+[sinks.kafka_out]
+type = "kafka"
+inputs = ["normalize"]
+bootstrap_servers = "kafka:${KAFKA_PORT}"
+topic = "${KAFKA_TOPIC}"
+encoding.codec = "json"
+
+# opensearch 전용
+[sinks.opensearch_out]
+type = "elasticsearch"    # OpenSearch도 Elasticsearch 프로토콜 호환이라 이 타입 사용
+inputs = ["normalize"]
+endpoints = ["http://opensearch:${OPENSEARCH_PORT}"]
+mode = "bulk"   # POST /_bluk
+bulk.index = "shire-events-%Y.%m.%d"   # 날짜별 인덱스 자동 생성
+api_version = "v7"    # OpenSearch는 ES 7.x API와 호환
+
+# clickhouse: 집계/통계용 저장소로 전달
+[sinks.clickhouse_out]
+type = "clickhouse"
+inputs = ["normalize"]
+endpoint = "http://clickhouse:${CLICKHOUSE_HTTP_PORT}"
+database = "${CLICKHOUSE_DB}"
+table = "security_events"
+auth.strategy = "basic"
+auth.user = "${CLICKHOUSE_USER}"
+auth.password = "${CLICKHOUSE_PASSWORD}"

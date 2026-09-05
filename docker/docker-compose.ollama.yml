@@ -1,0 +1,21 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - shire-net
+    deploy:
+      resources:                       # 이 컨테이너에 리소스를 예약(할당)하겠다는 선언
+        reservations:                  # 예약할 자원 목록 시작
+          devices:                     # 컨테이너에 넘겨줄 디바이스 목록
+            - driver: nvidia           # NVIDIA 드라이버를 통해 디바이스에 접근
+              count: 1                 # GPU 1개를 할당 (RTX 5090 하나)
+              capabilities: [gpu]      # 이 디바이스에게 요구하는 기능은 "gpu" 연산 기능
+
+volumes:
+  ollama_data:
