@@ -16,3 +16,6 @@ archive/
 
 # Docker 서비스 데이터 (실행 중 생성되는 볼륨 데이터)
 docker/*/data/
+
+# 빌드 아티팩트
+target/
