@@ -1,0 +1,34 @@
+# docker compose -f docker-compose.yml  -f docker-compose.redis.yml up -d redis
+services:
+  redis:
+    image: redis:8-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:?REDIS_PORT가 설정되지 않았습니다}:6379"
+    # 재시작 시 데이터를 유지하고 싶은 경우 아래 volumes, command 활성화
+    # volumes:
+    #   - ./docker/redis/data:/data
+    # command:
+    #   [
+    #     "redis-server",
+    #     "--appendonly", "yes", # 쓰기 명령을 AOF 파일에 기록하여 재시작 시 데이터 복구에 활용
+    #     "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD가 설정되지 않았습니다}" # Redis 서버 접속 비밀번호 설정
+    #   ]
+    # 재시작 시 데이터를 초기화하고 싶다면 아래 tmpfs, command 활성화
+    tmpfs: # 컨테이너가 재시작되면 데이터가 사라지는 메모리 저장소
+     - /data
+    command:
+      [
+        "redis-server",
+        "--save", "",
+        "--appendonly", "no",
+        "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD가 설정되지 않았습니다}"
+      ]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shire-net

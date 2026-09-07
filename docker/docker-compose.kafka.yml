@@ -1,17 +1,18 @@
+# docker compose -f docker-compose.yml  -f docker-compose.kafka.yml up -d kafka
 services:
   kafka:
     image: apache/kafka:latest
     container_name: kafka
     restart: unless-stopped
     ports:
-      - "9092:9092"       # 클라이언트(Producer/Consumer)가 접속하는 포트
+      - "${KAFKA_PORT:?KAFKA_PORT가 설정되지 않았습니다}:${KAFKA_PORT}" # 클라이언트(Producer/Consumer)가 접속하는 포트
     environment:
       # ── 브로커 식별 및 역할 ──
       KAFKA_NODE_ID: 1                              # 이 브로커의 고유 ID (클러스터 내에서 유일해야 함)
       KAFKA_PROCESS_ROLES: broker,controller         # 이 노드가 broker(메시지 처리)와 controller(메타데이터 관리) 역할을 동시에 수행
 
       # ── 리스너(수신 주소) 설정 ──
-      KAFKA_LISTENERS: CLIENT://0.0.0.0:${KAFKA_PORT},CONTROLLER://0.0.0.0:${KAFKA_CONTROLLER_PORT}
+      KAFKA_LISTENERS: CLIENT://0.0.0.0:${KAFKA_PORT:?KAFKA_PORT가 설정되지 않았습니다},CONTROLLER://0.0.0.0:${KAFKA_CONTROLLER_PORT:?KAFKA_CONTROLLER_PORT가 설정되지 않았습니다}
         # CLIENT: 일반 클라이언트(Vector 등)가 붙는 리스너
         # CONTROLLER: 브로커 간 메타데이터 통신 전용 리스너(옛 Zookeeper 역할을 대체)
       KAFKA_ADVERTISED_LISTENERS: CLIENT://kafka:${KAFKA_PORT}
@@ -40,6 +41,12 @@ services:
         # 자동 생성 비활성화 - 우리가 직접 만든 토픽만 사용
     volumes:
       - ./kafka/data:/var/lib/kafka/data   # 로컬 폴더에 카프카 데이터 저장 (컨테이너 재생성해도 데이터 유지)
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${KAFKA_PORT} || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
       - shire-net
       

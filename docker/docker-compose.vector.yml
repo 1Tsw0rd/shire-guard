@@ -1,3 +1,4 @@
+# docker compose -f docker-compose.yml  -f docker-compose.vector.yml up -d vector
 services:
   vector:
     image: timberio/vector:latest-alpine
@@ -5,12 +6,12 @@ services:
     restart: unless-stopped
     ports:
       - "${VECTOR_PORT}:${VECTOR_PORT}"
+      - "${VECTOR_API_PORT}:${VECTOR_API_PORT}"  # API/healthcheck 포트
     environment:
-      - VECTOR_PORT=${VECTOR_PORT}
+      - VECTOR_PORT=${VECTOR_PORT:?VECTOR_PORT가 설정되지 않았습니다}
+      - VECTOR_API_PORT=${VECTOR_API_PORT:?VECTOR_API_PORT가 설정되지 않았습니다}
       - KAFKA_PORT=${KAFKA_PORT}
-      - KAFKA_TOPIC=${KAFKA_TOPIC}
-      - OPENSEARCH_PORT=${OPENSEARCH_PORT}
-      - CLICKHOUSE_HTTP_PORT=${CLICKHOUSE_HTTP_PORT}
+      - KAFKA_TOPIC=${KAFKA_TOPIC:?KAFKA_TOPIC이 설정되지 않았습니다}
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
@@ -21,5 +22,10 @@ services:
       # 로컬 설정 파일을 컨테이너 안 경로에 읽기 전용(ro)으로 마운트
     command: ["--config", "/etc/vector/vector.toml"]
       # vector 실행 시 이 설정 파일을 쓰라고 명시적으로 지정
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O - http://127.0.0.1:8686/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - shire-net

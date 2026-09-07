@@ -1,18 +1,24 @@
+# docker compose -f docker-compose.yml  -f docker-compose.clickhouse.yml up -d clickhouse
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
     container_name: clickhouse
     restart: unless-stopped
     ports:
-      - "${CLICKHOUSE_HTTP_PORT}:${CLICKHOUSE_HTTP_PORT}"    # HTTP 인터페이스 (Vector, curl 등이 여기로 접속)
-      - "${CLICKHOUSE_NATIVE_PORT}:${CLICKHOUSE_NATIVE_PORT}"    # 네이티브 프로토콜 포트 (클라이언트 CLI 등에서 사용)
+      - "${CLICKHOUSE_HTTP_PORT:?CLICKHOUSE_HTTP_PORT가 설정되지 않았습니다}:8123"        # HTTP 인터페이스 (Vector, curl 등이 여기로 접속)
+      - "${CLICKHOUSE_NATIVE_PORT:?CLICKHOUSE_NATIVE_PORT가 설정되지 않았습니다}:9000"  # 네이티브 프로토콜 포트 (클라이언트 CLI 등에서 사용)
     environment:
-      - CLICKHOUSE_DB=${CLICKHOUSE_DB}               # 초기 생성할 데이터베이스 이름
-      - CLICKHOUSE_USER=${CLICKHOUSE_USER}           # 초기 생성할 사용자 이름(docker/.env 참조)
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}   # 사용자 비밀번호(docker/.env 참조)
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:?CLICKHOUSE_DB가 설정되지 않았습니다}                     # 초기 생성할 데이터베이스 이름
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:?CLICKHOUSE_USER가 설정되지 않았습니다}               # 초기 생성할 사용자 이름(docker/.env 참조)
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD가 설정되지 않았습니다}   # 사용자 비밀번호(docker/.env 참조)
     volumes:
       - ./clickhouse/data:/var/lib/clickhouse   # 데이터 영구 저장
       - ./clickhouse/init:/docker-entrypoint-initdb.d   # 초기화 SQL 자동 실행 폴더
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O - http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - shire-net
     ulimits:

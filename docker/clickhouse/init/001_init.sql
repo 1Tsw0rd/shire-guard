@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS shire_guard.security_events (
+CREATE TABLE IF NOT EXISTS shire.security_events (
     event_type String,
     source_ip String,
     failed_count UInt32,

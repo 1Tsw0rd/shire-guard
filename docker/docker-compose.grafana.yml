@@ -1,11 +1,17 @@
+# docker compose -f docker-compose.yml  -f docker-compose.grafana.yml up -d grafana
 services:
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${GRAFANA_PORT:?GRAFANA_PORT가 설정되지 않았습니다}:3000" # Grafana는 컨테이너 내부 리스닝 포트를 환경변수로 바꿀 수 없어 3000 고정
     volumes:
       - ./grafana/data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O - http://localhost:${GRAFANA_PORT}/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - shire-net

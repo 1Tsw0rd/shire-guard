@@ -1,3 +1,8 @@
+# ── API: healthcheck 및 파이프라인 상태 조회용 엔드포인트 ──────────
+[api]
+enabled = true
+address = "0.0.0.0:${VECTOR_API_PORT}"
+
 # ── Sources: 이벤트를 어디서 받을지 정의 ──────────────────────────
 # 로컬(또는 외부)에서 이벤트를 보내면 여기서 수신함
 [sources.http_in]
@@ -40,11 +45,19 @@ bootstrap_servers = "kafka:${KAFKA_PORT}"
 topic = "${KAFKA_TOPIC}"
 encoding.codec = "json"
 
+# redpanda 전용 (Kafka 프로토콜 호환 브로커, 테스트용)
+#[sinks.redpanda_out]
+#type = "kafka"
+#inputs = ["normalize"]
+#bootstrap_servers = "redpanda:9092"
+#topic = "${KAFKA_TOPIC}"
+#encoding.codec = "json"
+
 # opensearch 전용
 [sinks.opensearch_out]
 type = "elasticsearch"    # OpenSearch도 Elasticsearch 프로토콜 호환이라 이 타입 사용
 inputs = ["normalize"]
-endpoints = ["http://opensearch:${OPENSEARCH_PORT}"]
+endpoints = ["http://opensearch:9200"]
 mode = "bulk"   # POST /_bluk
 bulk.index = "shire-events-%Y.%m.%d"   # 날짜별 인덱스 자동 생성
 api_version = "v7"    # OpenSearch는 ES 7.x API와 호환
@@ -53,7 +66,7 @@ api_version = "v7"    # OpenSearch는 ES 7.x API와 호환
 [sinks.clickhouse_out]
 type = "clickhouse"
 inputs = ["normalize"]
-endpoint = "http://clickhouse:${CLICKHOUSE_HTTP_PORT}"
+endpoint = "http://clickhouse:8123"
 database = "${CLICKHOUSE_DB}"
 table = "security_events"
 auth.strategy = "basic"

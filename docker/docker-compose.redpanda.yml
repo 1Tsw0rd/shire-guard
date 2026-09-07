@@ -1,0 +1,71 @@
+# docker compose -f docker-compose.yml -f docker-compose.redpanda.yml up -d redpanda
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.2
+    container_name: redpanda
+    restart: unless-stopped
+    ports:
+      - "${REDPANDA_PORT}:${REDPANDA_PORT}"
+    volumes:
+      - ./redpanda/data:/var/lib/redpanda/data
+    command:
+      - redpanda
+      - start
+      # "redpanda start" 명령 실행 — RedPanda 서버 프로세스를 띄우는 것
+      # Kafka는 이미지 자체가 자동으로 서버를 실행해줬지만, RedPanda는 커맨드로 명시적으로 "start" 해줘야 함
+
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:${REDPANDA_PORT:?REDPANDA_PORT가 설정되지 않았습니다}
+      # "Kafka 프로토콜로 어디서 접속을 받을지" 정의하며, Kafka의 KAFKA_LISTENERS와 정확히 같은 역할
+      #
+      # internal://0.0.0.0:9092은 같은 Docker 네트워크(shire-net) 안의 다른 컨테이너(Vector 등)가 접속할 때 쓰는 주소
+      #
+      # external://0.0.0.0:${REDPANDA_PORT}은 호스트 머신(네 컴퓨터)에서 직접 접속할 때 쓰는 주소
+      #     .env의 REDPANDA_PORT(19092) 값을 그대로 사용
+      #
+
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:${REDPANDA_PORT}
+      # "나한테 접속하려면 이 주소로 오라"고 클라이언트에게 알려주는 값, Kafka의 KAFKA_ADVERTISED_LISTENERS와 정확히 같은 역할
+      #
+      # internal://redpanda:9092는 Docker 네트워크 안에서는 "redpanda"라는 서비스 이름으로 접속하라고 안내
+      #     (Kafka 때 "localhost가 아니라 서비스명 kafka로"라고 했던 것과 동일한 이유)
+      #
+      # external://localhost:${REDPANDA_PORT}는 호스트에서 접속할 땐 localhost:19092로 오라고 안내
+
+      - --rpc-addr
+      - redpanda:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+      # 브로커끼리 서로 통신할 때 쓰는 내부 전용 포트
+      # 지금은 브로커가 1개뿐이라 사실상 "자기 자신"을 가리키는 값이지만, 나중에 브로커가 여러 개(클러스터)가 되면 이 포트로 서로 통신함
+      # Kafka의 CONTROLLER 리스너(KAFKA_CONTROLLER_PORT)와 비슷한 역할
+
+      - --mode
+      - dev-container
+      # "컨테이너 안에서 개발/테스트용으로 쓸 거다"라고 알려주는 사전 설정 세트
+      # 메모리 제한, 로그 레벨 등 여러 세부값을 하나하나 안 적어도
+      # 개발 환경에 적합한 기본값들을 한 번에 적용해줌 (Kafka엔 없는 RedPanda만의 편의 기능)
+      #
+      # 주의: 이 프리셋엔 토픽 자동 생성(auto-create)이 켜져 있음
+      # Kafka는 KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"로 명시적으로 꺼뒀지만
+      # RedPanda는 별도 설정 없이 dev-container만 써도 Producer(Vector)가
+      # 존재하지 않는 토픽에 처음 메시지를 보내는 순간 자동으로 토픽이 생성됨
+      # (실제로 rpk topic create를 안 쳤는데도 test_topic이 자동 생성된 것으로 확인)
+
+      - --smp
+      - "1"
+      # 사용할 CPU 코어 개수를 1개로 제한
+      # RedPanda는 코어마다 별도 스레드를 쓰는 구조라, 로컬 개발 환경에서는 코어를 다 쓰면 오히려 낭비라서 1개로 제한해두는 것
+
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health", "--exit-when-healthy"]
+      # 테이너 내부에서 "rpk cluster health --exit-when-healthy" 명령을 실행해서 RedPanda 클러스터가 정상 동작 중인지 확인
+      # rpk는 RedPanda 전용 CLI 도구 (Kafka의 kafka-topics.sh 같은 역할)
+      interval: 10s   # 10초마다 이 체크를 반복 실행
+      timeout: 5s     # 체크 명령이 5초 안에 응답 없으면 실패로 간주
+      retries: 5      # 5번 연속 실패해야 최종 "unhealthy"로 판정
+      start_period: 20s  # 컨테이너가 막 시작된 뒤 20초 동안은 실패해도 봐준다는 유예 시간
+
+    networks:
+      - shire-net

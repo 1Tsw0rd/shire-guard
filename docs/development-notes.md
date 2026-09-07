@@ -132,7 +132,7 @@ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 ### 1. Ollama 컨테이너 실행
 
 ```bash
-docker compose -f docker/docker-compose.ai.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d ollama
 ```
 
 ### 2. 모델 pull
@@ -200,7 +200,7 @@ Logstash의 input-filter-output과 동일한 개념.
 
 ### 1. 컨테이너 실행
 ```bash
-docker compose -f docker/docker-compose.vector.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.vector.yml up -d vector
 ```
 
 ### 2. 설정 파일 검증 (선택)
@@ -210,7 +210,7 @@ docker exec -it vector vector validate --config /etc/vector/vector.toml
 
 ### 3. 테스트 이벤트 전송
 ```bash
-curl -X POST http://localhost:8080 \
+curl -X POST http://localhost:8081 \
   -H "Content-Type: application/json" \
   -d '{"ip": "203.0.113.45", "failures": 342, "successes": 1, "username": "admin"}'
 ```
@@ -220,6 +220,10 @@ curl -X POST http://localhost:8080 \
 docker logs -f vector
 ```
 `ip → source_ip`, `failures → failed_count`, `successes → success_count`로 변환되어 출력됨.
+
+### 5. Health 상태 확인
+브라우저 또는 curl로 확인: http://localhost:8686/health
+`{"ok":true}` 응답이면 정상.
 
 ### 참고 명령어
 ```bash
@@ -244,7 +248,7 @@ Vector가 Producer, Rust Enrichment가 Consumer 역할을 담당. 별도 Produce
 ### 1. 전체 서비스 실행
 ```bash
 cd docker
-docker compose up -d
+docker compose -f docker-compose.yml  -f docker-compose.kafka.yml up -d kafka
 ```
 
 ### 2. 토픽 생성 (최초 1회)
@@ -293,13 +297,77 @@ docker exec -it kafka //opt/kafka/bin/kafka-consumer-groups.sh \
   --group test-group
 ```
 
+## 📨 RedPanda (Kafka 프로토콜 호환 브로커)
+
+Kafka와 동일한 프로토콜을 쓰는 C++ 기반 브로커로, Kafka 대신 사용 가능
+
+| 리스너 종류 | 역할 | 포트 |
+|---|---|---|
+| internal | Docker 네트워크 안(Vector 등)에서 접속 | 9092 (고정) |
+| external | 호스트 머신에서 직접 접속 | `${REDPANDA_PORT}`(19092, 가변) |
+
+- 단일 브로커, `--mode dev-container`로 개발용 사전 설정 적용
+- Kafka와 달리 환경변수가 아닌 `redpanda start` 커맨드라인 인자로 직접 설정 (`--kafka-addr`, `--advertise-kafka-addr` 등)
+- 토픽 생성은 `rpk`(RedPanda 전용 CLI)로 수행
+- 컨테이너 간 통신은 Docker 내장 DNS로 서비스명(`redpanda`) + internal 포트(9092) 사용
+
+### 1. 컨테이너 실행
+```bash
+cd docker
+docker compose -f docker-compose.yml -f docker-compose.redpanda.yml up -d redpanda
+```
+
+### 2. 클러스터 상태 확인
+```bash
+docker exec -it redpanda rpk cluster health
+docker exec -it redpanda rpk cluster info
+```
+
+### 3. 토픽 생성 (최초 1회)
+```bash
+docker exec -it redpanda rpk topic create test_topic
+```
+> 참고: docker-compose.redpanda.yml > command > `--mode dev-container`는 토픽 자동 생성이 기본 활성화돼 있어, 수동 생성 없이 Vector가 첫 이벤트를 보내는 순간 자동으로 만들어지기도 함. 위 명령은 명시적으로 미리 만들어두고 싶을 때 사용.
+
+### 4. 토픽 자동 생성 비활성화
+```bash
+docker exec -it redpanda rpk cluster config set auto_create_topics_enabled false
+```
+
+### 5. 토픽 확인
+```bash
+docker exec -it redpanda rpk topic list
+```
+
+### 6. 컨슈머 대기 (별도 터미널)
+```bash
+docker exec -it redpanda rpk topic consume test_topic
+```
+
+### 7. Vector로 이벤트 전송 → RedPanda 전달 확인
+```bash
+curl -X POST http://localhost:8081 \
+  -H "Content-Type: application/json" \
+  -d '{"ip":"203.0.113.45","failures":342,"successes":1,"username":"admin"}'
+```
+컨슈머 화면에 변환된 JSON이 뜨면 Vector → RedPanda 파이프라인 정상.
+
+### 참고: 소비 상태 확인
+```bash
+# 토픽 상세 정보(파티션, 오프셋 등) 확인
+docker exec -it redpanda rpk topic describe test_topic
+
+# 컨슈머 그룹 소비 상태(Lag) 확인
+docker exec -it redpanda rpk group describe test-group
+```
+
 ## 🔎 OpenSearch (조회/검색 저장소)
 
 Vector가 정규화한 이벤트를 저장. Kibana 대신 OpenSearch Dashboards 사용.
 
 ### 실행
 ```bash
-docker compose up -d
+docker compose -f docker-compose.yml  -f docker-compose.opensearch.yml up -d opensearch opensearch-dashboards
 ```
 
 ### 확인 (OpenSearch Dashboards)
@@ -317,6 +385,11 @@ GET shire-events/_search
 
 동일 이벤트를 정형 필드로 저장, 향후 대시보드/집계 쿼리용.
 
+### 컨테이너 실행
+```bash
+docker compose -f docker-compose.yml  -f docker-compose.clickhouse.yml up -d clickhouse
+```
+
 ### 테이블 자동 생성
 docker/clickhouse/init/ 폴더의 SQL이 최초 실행 시 자동 적용됨.
 
@@ -325,10 +398,63 @@ docker/clickhouse/init/ 폴더의 SQL이 최초 실행 시 자동 적용됨.
 2. 로그인: CLICKHOUSE_USER / CLICKHOUSE_PASSWORD (docker/.env 참고)
 3. 쿼리 실행:
 ```sql
-SELECT * FROM shire_guard.security_events
+SELECT * FROM shire.security_events
 ```
 
 ## 📈 Grafana (모니터링, 추후 본격 활용 예정)
 
 현재 컨테이너만 띄워둔 상태. ClickHouse 집계 데이터가 쌓이면 
 통합 대시보드로 활용 예정. (http://localhost:3000, admin/admin)
+
+### 컨테이너 실행
+```bash
+docker compose -f docker-compose.yml  -f docker-compose.grafana.yml up -d grafana
+```
+
+## 🐘 PostgreSQL (Playbook 설정 저장소)
+
+Playbook 정의(조건 노드, AI 분석 노드 설정)를 저장
+
+### 1. 컨테이너 실행
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d postgres
+```
+
+### 2. 접속 확인
+```bash
+docker exec -it postgres psql -U ${POSTGRES_USER} -d ${POSTGRES_DB}
+```
+
+### 3. 연결 문자열
+`backend/.env`의 `DATABASE_URL`에서 관리 (docker/.env와 별개, Rust 앱이 직접 읽는 값).
+
+
+## 🧰 Redis / Dragonfly (캐싱)
+
+Playbook 설정 등 자주 조회되는 값을 메모리에 캐싱
+
+### 1. 컨테이너 실행
+```bash
+docker compose -f docker-compose.yml -f docker-compose.redis.yml up -d redis
+# 또는
+docker compose -f docker-compose.yml -f docker-compose.dragonfly.yml up -d dragonfly
+```
+
+### 2. CLI 접속
+```bash
+docker exec -it redis redis-cli -a ${REDIS_PASSWORD}
+# Dragonfly도 redis-cli 프로토콜 호환이라 동일하게 접속 가능
+docker exec -it dragonfly redis-cli -a ${DRAGONFLY_PASSWORD}
+```
+
+### 3. 기본 명령어
+```bash
+SET key value EX 60      # key에 value 저장, 60초 후 만료
+GET key                  # key 값 조회
+DEL key                  # key 삭제
+TTL key                  # 남은 만료 시간(초) 확인
+PING                     # 연결 확인 (PONG 응답)
+```
+
+### 4. 연결 정보
+`backend/.env`의 `CACHE_BACKEND`, `REDIS_*`/`DRAGONFLY_*` 값에서 관리.
