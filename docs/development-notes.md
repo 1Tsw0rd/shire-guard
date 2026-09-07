@@ -6,7 +6,7 @@
                (Normalize)
                       │
                       ▼
-                    Kafka
+                    Kafka/RedPanda
                       │
                       ▼
               ┌───────────────┐
@@ -25,6 +25,7 @@
                       │
                       ▼
                 Playbook Engine
+        (설정 조회 시 Redis/Dragonfly 캐시 활용 예정 — 로드맵)
                       │
                       ▼
                 Condition Node
