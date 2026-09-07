@@ -1,0 +1,43 @@
+name: shire-guard backend CI
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+    branches:
+      - develop
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo fmt check
+        run: cargo fmt --check
+        working-directory: backend
+
+      - name: Cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        working-directory: backend
+
+      - name: Cargo build
+        run: cargo build
+        working-directory: backend
