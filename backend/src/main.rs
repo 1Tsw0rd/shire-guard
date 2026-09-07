@@ -19,8 +19,8 @@ async fn main() {
         )
         .init();
 
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL 환경변수가 설정되어 있지 않습니다");
+    let database_url =
+        std::env::var("DATABASE_URL").expect("DATABASE_URL 환경변수가 설정되어 있지 않습니다");
 
     let postgres = PgPoolOptions::new()
         .max_connections(10)
