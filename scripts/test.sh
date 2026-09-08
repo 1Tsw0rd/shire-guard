@@ -14,16 +14,74 @@ SYSTEM_PROMPT="You are a security analysis assistant. Based on the provided evid
 PROMPT="Review the following file analysis evidence: filename invoice_2026.exe, UPX packing detected, VirusTotal 41/72 detections."
 
 
-# ── 이벤트(Vector→Kafka/OpenSearch/ClickHouse) 테스트 ──
+# ── 표준 RAW EVENT 정의 (event_id는 인자로 받음) ──────────────────
+event_file_download() {
+  local eid=$1
+  cat <<EOF
+{"event_id":"$eid","event_type":"file_download","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","source_ip":"185.220.101.45","destination_domain":"cdn-update-service.net","file_name":"invoice_2026.exe","file_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","file_size_bytes":245760}
+EOF
+}
+
+event_login_failure() {
+  local eid=$1
+  cat <<EOF
+{"event_id":"$eid","event_type":"login_failure","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","source_ip":"185.220.101.45","username":"admin","attempt_count":12,"target_service":"ssh"}
+EOF
+}
+
+event_dns_beacon() {
+  local eid=$1
+  cat <<EOF
+{"event_id":"$eid","event_type":"dns_beacon","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","source_ip":"198.51.100.77","destination_domain":"telemetry-sync.info","hostname":"WKS-1183","request_interval_seconds":60}
+EOF
+}
+
+list_events() {
+  echo "사용 가능한 event_type:"
+  echo "  file_download  - AbuseIPDB + DNS + VirusTotal 전부 검증"
+  echo "  login_failure  - AbuseIPDB만 검증"
+  echo "  dns_beacon     - AbuseIPDB + DNS 검증 (파일 없음)"
+}
+
+
+# ── 이벤트(Vector→Kafka/RedPanda/OpenSearch/ClickHouse) 테스트 ──
 test_event() {
-  echo "▶ 테스트 이벤트 전송..."
+  local event_type=$1
+  local start=${2:-1}
+  local count=${3:-1}
 
-  local payload='{"ip":"203.0.113.45","failures":342,"successes":1,"username":"admin"}'
+  if [ "$event_type" == "list" ] || [ "$event_type" == "ls" ]; then
+    list_events
+    return
+  fi
 
-  curl -s -X POST "$VECTOR_URL" \
-    -H "Content-Type: application/json" \
-    -d "$payload" > /dev/null
+  local fn
+  case "$event_type" in
+    file_download) fn=event_file_download ;;
+    login_failure) fn=event_login_failure ;;
+    dns_beacon)    fn=event_dns_beacon ;;
+    "")            fn=event_file_download ;;
+    *)
+      echo "알 수 없는 event_type: $event_type"
+      list_events
+      exit 1
+      ;;
+  esac
 
+  local end=$((start + count - 1))
+  echo "▶ evt-$start ~ evt-$end 전송 시작 ($event_type, 총 $count 건)"
+
+  local n=$start
+  for i in $(seq 1 "$count"); do
+    local payload
+    payload=$("$fn" "evt-$n")
+    curl -s -X POST "$VECTOR_URL" \
+      -H "Content-Type: application/json" \
+      -d "$payload" > /dev/null
+    n=$((n + 1))
+  done
+
+  echo "▶ $count 건 전송 완료 (evt-$start ~ evt-$end)"
   echo "▶ 변환 결과 (최근 로그 1줄):"
   sleep 0.5
   docker logs --tail 5 "$VECTOR_CONTAINER" 2>/dev/null | grep -E '^\{' | tail -n 1 | sed 's/,/,\n  /g'
@@ -102,7 +160,10 @@ test_ollama() {
 print_help() {
   echo "Shire Guard 테스트 스크립트"
   echo ""
-  echo "  ./test.sh event                     이벤트 1건을 Vector→Kafka/OpenSearch/ClickHouse로 전송"
+  echo "  ./test.sh event                                       file_download 이벤트 1건 전송 (evt-1)"
+  echo "  ./test.sh event list                                  사용 가능한 event_type 목록 확인"
+  echo "  ./test.sh event <event_type> [시작번호] [반복횟수]     event_id를 evt-{시작번호}부터 순차 증가시키며 N건 전송"
+  echo "                                                         예: ./test.sh event login_failure 2000 100 → evt-2000~evt-2099"
   echo "  ./test.sh ollama list                번호별 실제 모델명 확인"
   echo "  ./test.sh ollama [번호|모델명] [--ko] AI 위험도 분석 테스트 (1:Qwen 2:Foundation-Sec, --ko: 한국어 번역)"
 }
@@ -110,7 +171,7 @@ print_help() {
 # ── 진입점 ────────────────────────────────────────
 case "$1" in
   event)
-    test_event
+    test_event "$2" "$3" "$4"
     ;;
   ollama)
     test_ollama "$2" "$3"

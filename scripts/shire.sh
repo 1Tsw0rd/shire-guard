@@ -125,6 +125,34 @@ cmd_kafka() {
   esac
 }
 
+# ── RedPanda 관련 ─────────────────────────────────
+cmd_redpanda() {
+  common_cmd redpanda "$1" "${@:2}" && return
+
+  case "$1" in
+    health)
+      docker exec -it redpanda rpk cluster health
+      ;;
+    info)
+      docker exec -it redpanda rpk cluster info
+      ;;
+    topics)
+      docker exec -it redpanda rpk topic list
+      ;;
+    consume)
+      if [ -z "$2" ]; then
+        echo "사용법: shire redpanda consume <토픽명>"
+        exit 1
+      fi
+      docker exec -it redpanda rpk topic consume "$2"
+      ;;
+    *)
+      echo "사용법: shire redpanda [logs|inspect|exec|start|stop|restart|health|info|topics|consume <토픽명>]"
+      exit 1
+      ;;
+  esac
+}
+
 # ── OpenSearch 관련 ──────────────────────────────
 cmd_opensearch() {
   common_cmd opensearch "$1" "${@:2}" && return
@@ -163,6 +191,51 @@ cmd_grafana() {
   case "$1" in
     *)
       echo "사용법: shire grafana [logs|inspect|exec|start|stop|restart]"
+      exit 1
+      ;;
+  esac
+}
+
+# ── PostgreSQL 관련 ───────────────────────────────
+cmd_postgres() {
+  common_cmd postgres "$1" "${@:2}" && return
+
+  case "$1" in
+    cli)
+      docker exec -it postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}"
+      ;;
+    *)
+      echo "사용법: shire postgres [logs|inspect|exec|start|stop|restart|cli]"
+      exit 1
+      ;;
+  esac
+}
+
+# ── Redis 관련 ────────────────────────────────────
+cmd_redis() {
+  common_cmd redis "$1" "${@:2}" && return
+
+  case "$1" in
+    cli)
+      docker exec -it redis redis-cli -a "${REDIS_PASSWORD}"
+      ;;
+    *)
+      echo "사용법: shire redis [logs|inspect|exec|start|stop|restart|cli]"
+      exit 1
+      ;;
+  esac
+}
+
+# ── Dragonfly 관련 ────────────────────────────────
+cmd_dragonfly() {
+  common_cmd dragonfly "$1" "${@:2}" && return
+
+  case "$1" in
+    cli)
+      docker exec -it dragonfly redis-cli -a "${DRAGONFLY_PASSWORD}"
+      ;;
+    *)
+      echo "사용법: shire dragonfly [logs|inspect|exec|start|stop|restart|cli]"
       exit 1
       ;;
   esac
@@ -218,7 +291,7 @@ print_help() {
   echo "  shire logs [서비스명]                  로그 확인 (생략 시 전체)"
   echo "  shire stats                           전체 컨테이너 리소스 사용량 확인"
   echo ""
-  echo "개별 서비스 공통 명령 (ollama, vector, kafka, opensearch, clickhouse, grafana):"
+  echo "개별 서비스 공통 명령 (ollama, vector, kafka, redpanda, opensearch, clickhouse, grafana, postgres, redis, dragonfly):" 
   echo "  shire <서비스명> logs                  해당 서비스 로그 확인"
   echo "  shire <서비스명> inspect               해당 서비스 상세 정보 확인"
   echo "  shire <서비스명> exec [명령어]          컨테이너 내부 접속 또는 명령 실행"
@@ -240,6 +313,12 @@ print_help() {
   echo "  shire kafka topics                    토픽 목록 확인"
   echo "  shire kafka consume <토픽명>           토픽 메시지 확인 (임시 디버깅용)"
   echo ""
+  echo "RedPanda 전용 명령:"
+  echo "  shire redpanda health                 클러스터 헬스체크"
+  echo "  shire redpanda info                   클러스터/브로커 정보 확인"
+  echo "  shire redpanda topics                 토픽 목록 확인"
+  echo "  shire redpanda consume <토픽명>        토픽 메시지 확인 (임시 디버깅용)"
+  echo ""
   echo "OpenSearch 전용 명령:"
   echo "  shire opensearch ping                 상태 확인"
   echo ""
@@ -248,11 +327,20 @@ print_help() {
   echo ""
   echo "Grafana 전용 명령:"
   echo "  (공통 명령만 사용)"
+  echo ""
+  echo "PostgreSQL 전용 명령:"
+  echo "  shire postgres cli                    대화형 클라이언트 접속"
+  echo ""
+  echo "Redis 전용 명령:"
+  echo "  shire redis cli                       대화형 클라이언트 접속"
+  echo ""
+  echo "Dragonfly 전용 명령:"
+  echo "  shire dragonfly cli                   대화형 클라이언트 접속 (redis-cli 호환)"
 }
 
 # ── 진입점 ───────────────────────────────────────
 case "$1" in
-  ollama|vector|kafka|opensearch|clickhouse|grafana)
+  ollama|vector|kafka|redpanda|opensearch|clickhouse|grafana|postgres|redis|dragonfly) 
     service="$1"
     shift
     "cmd_${service}" "$@"

@@ -9,7 +9,7 @@
                     Kafka/RedPanda
                       │
                       ▼
-              ┌───────────────┐
+              ┌─────────────────┐
               │ Rust Enrichment │
               └───────┬─────────┘
           ┌───────────┼───────────┐
@@ -22,10 +22,11 @@
                       ▼
               Enriched Evidence
            (검증된 사실 — Source of Truth)
+           ※ IP/해시 판정 결과는 Redis/Dragonfly에 캐싱
                       │
                       ▼
                 Playbook Engine
-        (설정 조회 시 Redis/Dragonfly 캐시 활용 예정 — 로드맵)
+        (설정 조회는 Moka 인메모리 캐시 활용 — 로드맵)
                       │
                       ▼
                 Condition Node
@@ -60,7 +61,7 @@
                                  │
                          ┌───────┴───────┐
                          ▼               ▼
-                  Elasticsearch      ClickHouse
+                   OpenSearch       ClickHouse
                   (조회/검색용)      (집계/통계용)
 
 ## 보고서 생성 - hwpx
@@ -212,14 +213,21 @@ docker exec -it vector vector validate --config /etc/vector/vector.toml
 ```bash
 curl -X POST http://localhost:8081 \
   -H "Content-Type: application/json" \
-  -d '{"ip": "203.0.113.45", "failures": 342, "successes": 1, "username": "admin"}'
+  -d '{
+  "event_id": "evt-20260908-001",
+  "timestamp": "2026-09-08T10:15:00Z",
+  "source_ip": "185.220.101.45",
+  "destination_domain": "cdn-update-service.net",
+  "file_name": "invoice_2026.exe",
+  "file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "file_size_bytes": 245760
+}'
 ```
 
 ### 4. 결과 확인
 ```bash
 docker logs -f vector
 ```
-`ip → source_ip`, `failures → failed_count`, `successes → success_count`로 변환되어 출력됨.
 
 ### 5. Health 상태 확인
 브라우저 또는 curl로 확인: http://localhost:8686/health
@@ -232,6 +240,9 @@ docker exec -it vector vector graph --config /etc/vector/vector.toml # 파이프
 ```
 
 ## 📨 Kafka (KRaft, Zookeeper 미사용)
+
+분산 이벤트 스트리밍 플랫폼. Producer가 보낸 메시지를 토픽 단위로 저장하고,
+Consumer가 순서대로 읽어가는 큐 역할. 시스템 간 비동기 연결점.
 
 Vector가 Producer, Rust Enrichment가 Consumer 역할을 담당. 별도 Producer 구현 불필요.
 
@@ -278,7 +289,15 @@ docker exec -it kafka //opt/kafka/bin/kafka-console-consumer.sh \
 ```bash
 curl -X POST http://localhost:8081 \
   -H "Content-Type: application/json" \
-  -d '{"ip":"203.0.113.45","failures":342,"successes":1,"username":"admin"}'
+  -d '{
+  "event_id": "evt-20260908-001",
+  "timestamp": "2026-09-08T10:15:00Z",
+  "source_ip": "185.220.101.45",
+  "destination_domain": "cdn-update-service.net",
+  "file_name": "invoice_2026.exe",
+  "file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "file_size_bytes": 245760
+}'
 ```
 컨슈머 화면에 변환된 JSON이 뜨면 Vector → Kafka 파이프라인 정상.
 
@@ -299,7 +318,10 @@ docker exec -it kafka //opt/kafka/bin/kafka-consumer-groups.sh \
 
 ## 📨 RedPanda (Kafka 프로토콜 호환 브로커)
 
-Kafka와 동일한 프로토콜을 쓰는 C++ 기반 브로커로, Kafka 대신 사용 가능
+Kafka API와 호환되는 C++ 기반 이벤트 스트리밍 브로커.
+- Kafka 프로토콜 호환
+- Kafka 대체 브로커로 사용 가능
+- 단일 바이너리 기반의 경량 구조
 
 | 리스너 종류 | 역할 | 포트 |
 |---|---|---|
@@ -348,7 +370,15 @@ docker exec -it redpanda rpk topic consume test_topic
 ```bash
 curl -X POST http://localhost:8081 \
   -H "Content-Type: application/json" \
-  -d '{"ip":"203.0.113.45","failures":342,"successes":1,"username":"admin"}'
+  -d '{
+  "event_id": "evt-20260908-001",
+  "timestamp": "2026-09-08T10:15:00Z",
+  "source_ip": "185.220.101.45",
+  "destination_domain": "cdn-update-service.net",
+  "file_name": "invoice_2026.exe",
+  "file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "file_size_bytes": 245760
+}'
 ```
 컨슈머 화면에 변환된 JSON이 뜨면 Vector → RedPanda 파이프라인 정상.
 
@@ -362,6 +392,12 @@ docker exec -it redpanda rpk group describe test-group
 ```
 
 ## 🔎 OpenSearch (조회/검색 저장소)
+
+오픈소스 분산 검색·분석 엔진으로, 로그와 이벤트 데이터를 색인하고 검색하는 데 사용.
+
+- Elasticsearch 계열의 검색 엔진
+- JSON 문서 기반 검색
+- OpenSearch Dashboards 제공
 
 Vector가 정규화한 이벤트를 저장. Kibana 대신 OpenSearch Dashboards 사용.
 
@@ -382,6 +418,9 @@ GET shire-events/_search
 
 
 ## 📊 ClickHouse (집계/통계 저장소)
+
+컬럼 기반 OLAP DB. 대량 데이터의 집계/통계 쿼리에 최적화, 
+단건 수정/삭제는 비효율적이라 Append-only 로그성 데이터에 적합.
 
 동일 이벤트를 정형 필드로 저장, 향후 대시보드/집계 쿼리용.
 
@@ -413,6 +452,8 @@ docker compose -f docker-compose.yml  -f docker-compose.grafana.yml up -d grafan
 
 ## 🐘 PostgreSQL (Playbook 설정 저장소)
 
+오픈소스 객체 관계형 데이터베이스로, 구조화된 데이터를 안정적으로 저장하고 관리할 수 있음.
+
 Playbook 정의(조건 노드, AI 분석 노드 설정)를 저장
 
 ### 1. 컨테이너 실행
@@ -431,7 +472,12 @@ docker exec -it postgres psql -U ${POSTGRES_USER} -d ${POSTGRES_DB}
 
 ## 🧰 Redis / Dragonfly (캐싱)
 
-Playbook 설정 등 자주 조회되는 값을 메모리에 캐싱
+인메모리 Key-Value 저장소. Dragonfly는 Redis 프로토콜과 호환되는 대체 구현체.
+빠른 조회가 필요한 데이터에 사용. 기본은 휘발성이지만 AOF 등으로 영속화도 가능.
+
+AbuseIPDB/VirusTotal 등 외부 API 조회 결과(IP 평판, 파일 해시 판정)를 캐싱해 
+동일 IOC의 중복 조회를 방지하고 API rate limit을 절약. 재시작 후에도 데이터가 
+유지되도록 영속 볼륨(AOF) 사용.
 
 ### 1. 컨테이너 실행
 ```bash
