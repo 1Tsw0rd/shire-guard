@@ -17,16 +17,26 @@ codec = "json"
 # ── Transforms: 받은 이벤트를 가공(정규화/변환)하는 단계 ──────────
 # Logstash의 filter와 동일한 역할
 [transforms.normalize]
-type = "remap"             # VRL(Vector Remap Language)로 필드를 직접 조작
-inputs = ["http_in"]       # 위에서 정의한 http_in 소스로부터 이벤트를 받음
+type = "remap"
+inputs = ["http_in"]
 source = '''
-.event_type = "shire_test"    # 새 필드 추가
-.source_ip = .ip              # 원본 필드(ip)를 표준 필드명(source_ip)으로 복사
-.failed_count = .failures     # 원본 필드(failures)를 표준 필드명으로 복사
-.success_count = .successes   # 원본 필드(successes)를 표준 필드명으로 복사
-del(.ip)                      # 원본 필드 삭제
-del(.failures)
-del(.successes)
+if !exists(.event_type) {
+  .event_type = "unknown"
+}
+
+if exists(.source_ip) {
+  .src_ip = strip_whitespace(string!(.source_ip))
+  del(.source_ip)
+}
+
+if exists(.destination_domain) {
+  .dst_domain = downcase(string!(.destination_domain))
+  del(.destination_domain)
+}
+
+if exists(.file_sha256) {
+  .file_sha256 = downcase(string!(.file_sha256))
+}
 '''
 
 
