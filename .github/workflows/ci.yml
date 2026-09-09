@@ -41,3 +41,7 @@ jobs:
       - name: Cargo build
         run: cargo build
         working-directory: backend
+
+      - name: Cargo test
+        run: cargo test --lib
+        working-directory: backend

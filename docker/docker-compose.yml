@@ -7,18 +7,18 @@ networks:
 include:
   - docker-compose.ollama.yml
   - docker-compose.vector.yml
-  # - docker-compose.kafka.yml
-  - docker-compose.redpanda.yml
+  - docker-compose.kafka.yml
+  # - docker-compose.redpanda.yml
   - docker-compose.opensearch.yml
   - docker-compose.clickhouse.yml
   - docker-compose.grafana.yml
   - docker-compose.postgres.yml
-  # - docker-compose.redis.yml
-  - docker-compose.dragonfly.yml
+  - docker-compose.redis.yml
+  # - docker-compose.dragonfly.yml
   
 # ── 포트 매핑 참고 (호스트:컨테이너) ──────────────────────────────
 # 가변:가변 → 컨테이너 내부 포트도 환경변수로 실제로 바뀜 (.env 값 변경 시 양쪽 다 반영)
-#   Kafka    : ${KAFKA_PORT}:${KAFKA_PORT}, ${KAFKA_CONTROLLER_PORT}:${KAFKA_CONTROLLER_PORT}
+#   Kafka    : ${KAFKA_PORT}:${KAFKA_PORT} (내부용), ${KAFKA_EXTERNAL_PORT}:${KAFKA_EXTERNAL_PORT} (호스트용)
 #   Ollama   : ${OLLAMA_PORT}:${OLLAMA_PORT}
 #   Vector   : ${VECTOR_PORT}:${VECTOR_PORT}, ${VECTOR_API_PORT}:${VECTOR_API_PORT}
 #
