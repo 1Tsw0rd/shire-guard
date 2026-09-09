@@ -56,12 +56,12 @@ topic = "${KAFKA_TOPIC}"
 encoding.codec = "json"
 
 # redpanda 전용 (Kafka 프로토콜 호환 브로커, 테스트용)
-#[sinks.redpanda_out]
-#type = "kafka"
-#inputs = ["normalize"]
-#bootstrap_servers = "redpanda:9092"
-#topic = "${KAFKA_TOPIC}"
-#encoding.codec = "json"
+[sinks.redpanda_out]
+type = "kafka"
+inputs = ["normalize"]
+bootstrap_servers = "redpanda:9092"
+topic = "${KAFKA_TOPIC}"
+encoding.codec = "json"
 
 # opensearch 전용
 [sinks.opensearch_out]
