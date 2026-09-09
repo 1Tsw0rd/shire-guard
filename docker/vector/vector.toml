@@ -82,3 +82,13 @@ table = "security_events"
 auth.strategy = "basic"
 auth.user = "${CLICKHOUSE_USER}"
 auth.password = "${CLICKHOUSE_PASSWORD}"
+
+# ── 내부 메트릭 소스: Vector 자신의 처리 통계(수신/발신 이벤트 수 등)를 생성 ──
+[sources.internal_metrics]
+type = "internal_metrics"
+
+# ── Prometheus가 스크래핑할 수 있도록 내부 메트릭을 HTTP(address 값)로 노출 ──
+[sinks.prometheus_out]
+type = "prometheus_exporter"
+inputs = ["internal_metrics"]
+address = "0.0.0.0:9598"
