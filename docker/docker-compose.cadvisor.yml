@@ -1,0 +1,28 @@
+# docker compose -f docker-compose.yml -f docker-compose.cadvisor.yml up -d cadvisor
+services:
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    restart: unless-stopped
+    ports:
+      - "${CADVISOR_PORT:?CADVISOR_PORT가 설정되지 않았습니다}:8080" # cAdvisor 자체 웹 UI/메트릭 포트. 컨테이너 내부는 8080 고정(공식 이미지 기본값)
+    volumes:
+      # cAdvisor가 호스트의 Docker 컨테이너 정보를 읽어오기 위해 필요한 마운트들 (전부 읽기 전용)
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+        # Linux 커널 로그 장치에 접근해 컨테이너 상태 정보를 수집
+        # 커널 레벨의 이벤트(예: 메모리 부족으로 컨테이너가 강제 종료됐다는 커널 로그)도 같이 수집하고자 함
+    privileged: true  # 호스트 시스템 리소스(cgroup 등)에 접근하기 위해 필요 — cAdvisor 공식 요구사항
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O - http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - shire-net

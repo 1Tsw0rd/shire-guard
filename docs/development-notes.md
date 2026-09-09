@@ -64,6 +64,41 @@
                    OpenSearch       ClickHouse
                   (조회/검색용)      (집계/통계용)
 
+## 모니터링 아키텍처
+
+     ┌────────────────┐       ┌──────────────────────────────┐
+     │    cAdvisor    │       │       Monitored Services     │
+     │                │       │                              │
+     │ 모든 컨테이너의  │       │ Vector                       │
+     │ 리소스 수집      │       │ Kafka / RedPanda            │
+     │                │       │ Redis / Dragonfly            │
+     │ CPU / Memory   │       │ PostgreSQL                   │
+     │ Network        │       │ OpenSearch                   │
+     │ UP / DOWN      │       │ ClickHouse                   │
+     └───────┬────────┘       │ Rust Axum                    │
+             │                │ Ollama                       │
+             │                │                              │
+             │                │ Pipeline Metrics             │
+             │                └──────────────┬───────────────┘
+             │                               │
+             └───────────────┬───────────────┘
+                             │
+                   Prometheus scrape (Metrics)
+                             │
+                             ▼
+                    ┌──────────────────────┐
+                    │      Prometheus      │
+                    │    메트릭 수집 · 저장  │
+                    └──────────┬───────────┘
+                               │
+                         PromQL 조회
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │       Grafana        │
+                    │      시각화 · 알림     │
+                    └──────────────────────┘
+
 ## 보고서 생성 - hwpx
 * 단건 이벤트 보고서
 * 집계(주간) 이벤트 보고서
@@ -549,3 +584,51 @@ http://localhost:9090
 up
 ```
 등록된 모든 대상의 생존 여부(1=정상, 0=응답 없음) 한눈에 확인
+
+
+맞아, cAdvisor도 자체 웹 UI가 있어.
+
+## UI 확인
+
+```
+http://localhost:8082
+```
+
+접속하면 cAdvisor 기본 대시보드가 뜨고, 여기서:
+- 전체 호스트의 CPU/메모리/디스크/네트워크 사용량
+- 실행 중인 각 컨테이너 목록과 개별 리소스 사용량 그래프
+
+를 바로 확인할 수 있어. 다만 이 UI는 "지금 이 순간의 스냅샷"만 보여주고 과거 이력을 저장하지 않아서, 진짜 시계열 추적/알림은 Prometheus가 이 데이터를 가져가서 Grafana로 보여주는 쪽이 훨씬 유용해. 지금은 "제대로 데이터를 만들어내고 있는지" 육안으로 확인하는 용도로 쓰면 돼.
+
+
+## 📊 cAdvisor (컨테이너 리소스 모니터링)
+
+Google이 만든 오픈소스 도구로, 실행 중인 모든 Docker 컨테이너의 
+CPU/메모리/디스크/네트워크 사용량을 자동으로 수집해 Prometheus 포맷으로 노출함
+
+컨테이너 하나만 띄우면 Kafka, Vector, Rust 등 다른 모든 서비스의 리소스
+상태를 별도 설정 없이 한 번에 모니터링 대상으로 만들 수 있음
+(서비스별로 각각 exporter를 붙일 필요 없음)
+
+호스트 시스템(파일시스템, cgroup 등)에 깊이 접근해야 하는 특성상
+`privileged: true`와 다수의 읽기 전용 마운트가 필요함
+
+### 1. 컨테이너 실행
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cadvisor.yml up -d cadvisor
+```
+
+### 2. 웹 UI 접속
+```
+# Web UI
+http://localhost:8082
+
+# Metrics 확인
+http://localhost:8082/metrics
+```
+
+### 3. Prometheus 연동 (다음 단계)
+`docker/prometheus/prometheus.yml`에 스크래핑 대상으로 등록하면,
+cAdvisor가 수집한 데이터를 Prometheus가 가져가 장기 보관하고
+Grafana에서 시계열 그래프로 확인 가능해짐
+```

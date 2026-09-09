@@ -16,6 +16,7 @@ include:
   - docker-compose.redis.yml
   # - docker-compose.dragonfly.yml
   - docker-compose.prometheus.yml
+  - docker-compose.cadvisor.yml
   
 # ── 포트 매핑 참고 (호스트:컨테이너) ──────────────────────────────
 # 가변:가변 → 컨테이너 내부 포트도 환경변수로 실제로 바뀜 (.env 값 변경 시 양쪽 다 반영)
@@ -32,3 +33,4 @@ include:
 #   OpenSearch Dashboards   : ${OPENSEARCH_DASHBOARDS_PORT}:5601
 #   ClickHouse              : ${CLICKHOUSE_HTTP_PORT}:8123, ${CLICKHOUSE_NATIVE_PORT}:9000
 #   Prometheus              : ${PROMETHEUS_PORT}:9090
+#   cAdvisor                : ${CADVISOR_PORT}:8080
