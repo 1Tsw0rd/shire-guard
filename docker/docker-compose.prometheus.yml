@@ -1,0 +1,22 @@
+# docker compose -f docker-compose.yml -f docker-compose.prometheus.yml up -d prometheus
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:?PROMETHEUS_PORT가 설정되지 않았습니다}:9090" # Prometheus 웹 UI/API 포트. 컨테이너 내부는 9090 고정
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro # 스크래핑 대상 설정 파일을 읽기 전용으로 마운트
+      - prometheus_data:/prometheus # 수집한 시계열 데이터 저장 (named volume — Prometheus 자체 이미지 사용자 권한 이슈 방지 목적)
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O - http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - shire-net
+
+volumes:
+  prometheus_data:

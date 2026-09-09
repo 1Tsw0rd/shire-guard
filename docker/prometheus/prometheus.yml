@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 15s    # 15초마다 각 타겟에서 메트릭을 수집
+  # scrape_timeout: 10s    # 개별 scrape 요청이 10초를 넘으면 타임아웃(기본값 10s)
+  # evaluation_interval: 15s   # Alerting/Recording Rule 평가 주기
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']   # Prometheus 자기 자신도 모니터링 대상에 포함

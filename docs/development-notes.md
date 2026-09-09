@@ -504,3 +504,48 @@ PING                     # 연결 확인 (PONG 응답)
 
 ### 4. 연결 정보
 `backend/.env`의 `CACHE_BACKEND`, `REDIS_*`/`DRAGONFLY_*` 값에서 관리.
+
+좋아, 일관성 유지가 맞는 판단이야 — 이미 9개 서비스가 `:latest`인데 Prometheus 하나만 버전 고정하면 오히려 스타일이 들쭉날쭉해 보여. 나중에 전체를 한 번에 버전 고정하는 리팩터링을 하고 싶으면 그때 몰아서 하는 게 낫고.
+
+development-notes.md 스타일 그대로 맞춰서 Prometheus 섹션 작성할게.
+
+
+## 📈 Prometheus (메트릭 수집기)
+
+오픈소스 모니터링 시스템으로, 각 서비스에서 제공하는 메트릭(metric)​을 주기적으로 가져와 시계열 데이터로 저장
+(Grafana 혼자서는 데이터를 수집하지 못하고, Prometheus 같은 데이터 소스가 있어야 시각화할 대상이 생김)
+
+로그처럼 상세한 사건 내용을 저장하는 것이 아니라,
+- CPU 사용량
+- 메모리 사용량
+- 요청 수
+- 처리 성공/실패 횟수
+- 이벤트 처리량
+
+같은 숫자 형태의 상태 정보를 시간에 따라 수집하고 조회하는 데 사용
+
+Vector/Kafka/RedPanda/Rust 등 파이프라인 각 단계가 "몇 개를 처리했는지"를 
+Prometheus가 계속 가져가 쌓아두면, Grafana에서 "Vector는 100개를 보냈는데 
+Rust는 0개를 받았다"처럼 구간별 수치를 비교해 이상 징후를 발견할 수 있음.
+
+### 1. 컨테이너 실행
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prometheus.yml up -d prometheus
+```
+
+### 2. 웹 UI 접속
+```
+http://localhost:9090
+```
+상단 메뉴의 Status → Targets에서, 등록된 각 서비스가 정상적으로 수집되고 있는지(`UP`) 확인 가능.
+
+### 3. 스크래핑 대상 설정
+`docker/prometheus/prometheus.yml`에서 관리. 어떤 서비스의 어떤 주소에서 
+메트릭을 가져올지 여기에 등록해야 Prometheus가 수집을 시작함
+
+### 4. 기본 쿼리 확인
+웹 UI의 Graph 탭에서 쿼리 입력 후 실행 가능:
+```
+up
+```
+등록된 모든 대상의 생존 여부(1=정상, 0=응답 없음) 한눈에 확인
