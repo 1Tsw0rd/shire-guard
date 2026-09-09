@@ -42,8 +42,7 @@ impl AppConfig {
             database_url: std::env::var("DATABASE_URL").map_err(|_| {
                 AppError::Internal("DATABASE_URL 환경변수가 설정되지 않았습니다.".into())
             })?,
-            rust_log: std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "info,tower_http=debug".into()),
+            rust_log: std::env::var("RUST_LOG").unwrap_or_else(|_| "info,tower_http=debug".into()),
 
             // Message Broker (Kafka / RedPanda)
             broker: BrokerConfig::from_env()?,
@@ -74,8 +73,9 @@ impl BrokerConfig {
         )?;
 
         // Consumer 설정
-        let topic = std::env::var("KAFKA_TOPIC")
-            .map_err(|_| AppError::Internal("KAFKA_TOPIC 환경변수가 설정되지 않았습니다.".into()))?;
+        let topic = std::env::var("KAFKA_TOPIC").map_err(|_| {
+            AppError::Internal("KAFKA_TOPIC 환경변수가 설정되지 않았습니다.".into())
+        })?;
         let group_id = std::env::var("KAFKA_GROUP_ID").map_err(|_| {
             AppError::Internal("KAFKA_GROUP_ID 환경변수가 설정되지 않았습니다.".into())
         })?;
@@ -102,7 +102,8 @@ impl BrokerConfig {
             "kafka" => {
                 let host = kafka_host.ok_or_else(|| {
                     AppError::Internal(
-                        "MESSAGE_BROKER=kafka인데 KAFKA_HOST 환경변수가 설정되지 않았습니다.".into(),
+                        "MESSAGE_BROKER=kafka인데 KAFKA_HOST 환경변수가 설정되지 않았습니다."
+                            .into(),
                     )
                 })?;
                 let port = kafka_external_port.ok_or_else(|| {
@@ -115,12 +116,14 @@ impl BrokerConfig {
             "redpanda" => {
                 let host = redpanda_host.ok_or_else(|| {
                     AppError::Internal(
-                        "MESSAGE_BROKER=redpanda인데 REDPANDA_HOST 환경변수가 설정되지 않았습니다.".into(),
+                        "MESSAGE_BROKER=redpanda인데 REDPANDA_HOST 환경변수가 설정되지 않았습니다."
+                            .into(),
                     )
                 })?;
                 let port = redpanda_port.ok_or_else(|| {
                     AppError::Internal(
-                        "MESSAGE_BROKER=redpanda인데 REDPANDA_PORT 환경변수가 설정되지 않았습니다.".into(),
+                        "MESSAGE_BROKER=redpanda인데 REDPANDA_PORT 환경변수가 설정되지 않았습니다."
+                            .into(),
                     )
                 })?;
                 Ok((MessageBroker::RedPanda, format!("{host}:{port}")))
@@ -141,8 +144,7 @@ mod tests {
     #[test]
     fn resolve_kafka_broker() {
         let (broker, brokers) =
-            BrokerConfig::resolve("kafka", Some("localhost"), Some("19092"), None, None)
-                .unwrap();
+            BrokerConfig::resolve("kafka", Some("localhost"), Some("19092"), None, None).unwrap();
 
         assert_eq!(broker, MessageBroker::Kafka);
         assert_eq!(brokers, "localhost:19092");

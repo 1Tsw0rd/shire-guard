@@ -18,7 +18,8 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "event_type")] // enum을 JSON의 어떤 필드로 구분할지 지정
 pub enum RawEvent {
-    #[serde(rename = "file_download")] // JSON의 event_type이 "file_download"이면 이 variant로 역직렬화
+    #[serde(rename = "file_download")]
+    // JSON의 event_type이 "file_download"이면 이 variant로 역직렬화
     FileDownload {
         event_id: String, // 보안장비/센서마다 이벤트 ID 형식이 다를 수 있어 String으로 정의(예: UUID, 숫자, 문자열 등)
         timestamp: String,
@@ -72,7 +73,9 @@ mod tests {
         let event: RawEvent = serde_json::from_str(json).expect("파싱 실패"); // JSON 문자열을 RawEvent enum으로 역직렬화
 
         match event {
-            RawEvent::FileDownload { event_id, src_ip, .. } => {
+            RawEvent::FileDownload {
+                event_id, src_ip, ..
+            } => {
                 assert_eq!(event_id, "evt-1");
                 assert_eq!(src_ip, "185.220.101.45");
             }
