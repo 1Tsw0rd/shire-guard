@@ -475,19 +475,9 @@ docker/clickhouse/init/ 폴더의 SQL이 최초 실행 시 자동 적용됨.
 SELECT * FROM shire.security_events
 ```
 
-## 📈 Grafana (모니터링, 추후 본격 활용 예정)
-
-현재 컨테이너만 띄워둔 상태. ClickHouse 집계 데이터가 쌓이면 
-통합 대시보드로 활용 예정. (http://localhost:3000, admin/admin)
-
-### 컨테이너 실행
-```bash
-docker compose -f docker-compose.yml  -f docker-compose.grafana.yml up -d grafana
-```
-
 ## 🐘 PostgreSQL (Playbook 설정 저장소)
 
-오픈소스 객체 관계형 데이터베이스로, 구조화된 데이터를 안정적으로 저장하고 관리할 수 있음.
+오픈소스 객체 관계형 데이터베이스로, 구조화된 데이터를 안정적으로 저장하고 관리할 수 있음
 
 Playbook 정의(조건 노드, AI 분석 노드 설정)를 저장
 
@@ -508,11 +498,11 @@ docker exec -it postgres psql -U ${POSTGRES_USER} -d ${POSTGRES_DB}
 ## 🧰 Redis / Dragonfly (캐싱)
 
 인메모리 Key-Value 저장소. Dragonfly는 Redis 프로토콜과 호환되는 대체 구현체.
-빠른 조회가 필요한 데이터에 사용. 기본은 휘발성이지만 AOF 등으로 영속화도 가능.
+빠른 조회가 필요한 데이터에 사용. 기본은 휘발성이지만 AOF 등으로 영속화도 가능
 
 AbuseIPDB/VirusTotal 등 외부 API 조회 결과(IP 평판, 파일 해시 판정)를 캐싱해 
 동일 IOC의 중복 조회를 방지하고 API rate limit을 절약. 재시작 후에도 데이터가 
-유지되도록 영속 볼륨(AOF) 사용.
+유지되도록 영속 볼륨(AOF) 사용
 
 ### 1. 컨테이너 실행
 ```bash
@@ -537,12 +527,24 @@ TTL key                  # 남은 만료 시간(초) 확인
 PING                     # 연결 확인 (PONG 응답)
 ```
 
-### 4. 연결 정보
-`backend/.env`의 `CACHE_BACKEND`, `REDIS_*`/`DRAGONFLY_*` 값에서 관리.
 
-좋아, 일관성 유지가 맞는 판단이야 — 이미 9개 서비스가 `:latest`인데 Prometheus 하나만 버전 고정하면 오히려 스타일이 들쭉날쭉해 보여. 나중에 전체를 한 번에 버전 고정하는 리팩터링을 하고 싶으면 그때 몰아서 하는 게 낫고.
+## 📈 Grafana (모니터링 대시보드)
 
-development-notes.md 스타일 그대로 맞춰서 Prometheus 섹션 작성할게.
+서비스 상태와 리소스 사용량을 한눈에 확인할 수 있는 모니터링 대시보드 도구
+
+### 컨테이너 실행
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.grafana.yml up -d grafana
+```
+
+### Web UI 접속
+
+```text
+http://localhost:3000
+```
+
+기본 로그인: `admin / admin`
 
 
 ## 📈 Prometheus (메트릭 수집기)
@@ -561,7 +563,7 @@ development-notes.md 스타일 그대로 맞춰서 Prometheus 섹션 작성할�
 
 Vector/Kafka/RedPanda/Rust 등 파이프라인 각 단계가 "몇 개를 처리했는지"를 
 Prometheus가 계속 가져가 쌓아두면, Grafana에서 "Vector는 100개를 보냈는데 
-Rust는 0개를 받았다"처럼 구간별 수치를 비교해 이상 징후를 발견할 수 있음.
+Rust는 0개를 받았다"처럼 구간별 수치를 비교해 이상 징후를 발견할 수 있음
 
 ### 1. 컨테이너 실행
 ```bash
@@ -584,21 +586,6 @@ http://localhost:9090
 up
 ```
 등록된 모든 대상의 생존 여부(1=정상, 0=응답 없음) 한눈에 확인
-
-
-맞아, cAdvisor도 자체 웹 UI가 있어.
-
-## UI 확인
-
-```
-http://localhost:8082
-```
-
-접속하면 cAdvisor 기본 대시보드가 뜨고, 여기서:
-- 전체 호스트의 CPU/메모리/디스크/네트워크 사용량
-- 실행 중인 각 컨테이너 목록과 개별 리소스 사용량 그래프
-
-를 바로 확인할 수 있어. 다만 이 UI는 "지금 이 순간의 스냅샷"만 보여주고 과거 이력을 저장하지 않아서, 진짜 시계열 추적/알림은 Prometheus가 이 데이터를 가져가서 Grafana로 보여주는 쪽이 훨씬 유용해. 지금은 "제대로 데이터를 만들어내고 있는지" 육안으로 확인하는 용도로 쓰면 돼.
 
 
 ## 📊 cAdvisor (컨테이너 리소스 모니터링)
@@ -631,4 +618,3 @@ http://localhost:8082/metrics
 `docker/prometheus/prometheus.yml`에 스크래핑 대상으로 등록하면,
 cAdvisor가 수집한 데이터를 Prometheus가 가져가 장기 보관하고
 Grafana에서 시계열 그래프로 확인 가능해짐
-```
