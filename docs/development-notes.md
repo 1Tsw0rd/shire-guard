@@ -623,6 +623,19 @@ http://localhost:9090
 `docker/prometheus/prometheus.yml`에서 관리. 어떤 서비스의 어떤 주소에서 
 메트릭을 가져올지 여기에 등록해야 Prometheus가 수집을 시작함
 
+`docker/prometheus/prometheus.yml`에서 관리.
+어떤 서비스의 어떤 endpoint에서 메트릭을 가져올지 정의한다.
+
+현재 대상:
+
+| 서비스 | Target |
+|---|---|
+| Prometheus | `localhost:9090` |
+| Vector | `vector:9598/metrics` |
+| RedPanda | `redpanda:9644/public_metrics` |
+| Kafka | `kafka:9404/metrics` |
+| cAdvisor | `cadvisor:8080/metrics` |
+
 ### 4. 기본 쿼리 확인
 웹 UI의 Graph 탭에서 쿼리 입력 후 실행 가능:
 ```
