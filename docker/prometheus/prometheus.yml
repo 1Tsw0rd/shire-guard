@@ -17,3 +17,7 @@ scrape_configs:
       - targets:
           - "redpanda:9644"  # Redpanda 컨테이너 내부 메트릭 포트
     metrics_path: "/public_metrics"
+
+  - job_name: "kafka"
+    static_configs:
+      - targets: ["kafka:9404"]

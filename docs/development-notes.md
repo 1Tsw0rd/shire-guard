@@ -336,7 +336,7 @@ curl -X POST http://localhost:8081 \
 ```
 컨슈머 화면에 변환된 JSON이 뜨면 Vector → Kafka 파이프라인 정상.
 
-### 참고: 소비 상태 확인
+### 6. 참고: 소비 상태 확인
 
 ```bash
 # 토픽 오프셋(쌓인 메시지 수) 확인
@@ -350,6 +350,49 @@ docker exec -it kafka //opt/kafka/bin/kafka-consumer-groups.sh \
   --describe \
   --group test-group
 ```
+
+### 7. JMX Exporter (Prometheus 메트릭 노출)
+
+- https://prometheus.github.io/jmx_exporter/
+
+Kafka는 RedPanda처럼 기본 Prometheus Metrics endpoint를
+바로 제공하지 않는다.
+
+따라서 Kafka JVM에 Prometheus JMX Exporter를
+Java Agent 방식으로 주입해 JMX 메트릭을 Prometheus 형식으로 노출한다.
+
+별도 컨테이너나 원격 JMX 포트 없이
+Kafka JVM에서 직접 `/metrics`를 제공한다.
+
+관련 파일:
+
+```text
+docker/kafka/jmx-exporter/
+├── jmx_prometheus_javaagent-1.6.0.jar
+└── kafka.yml
+````
+
+`docker-compose.kafka.yml`에서 Java Agent를 Kafka JVM에 연결한다.
+
+```yaml
+volumes:
+  - ./kafka/jmx-exporter:/opt/jmx-exporter:ro
+
+environment:
+  KAFKA_OPTS: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-1.6.0.jar=9404:/opt/jmx-exporter/kafka.yml"
+
+healthcheck:
+  test:
+    [
+      "CMD-SHELL",
+      'KAFKA_OPTS="" /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${KAFKA_PORT} || exit 1'
+    ]
+
+# 참고: `KAFKA_OPTS`는 Kafka CLI가 실행하는 JVM에도 상속될 수 있어,
+# 기존 healthcheck 커맨드에서도 `KAFKA_OPTS=""`로 명시적으로 비워줘야
+# JMX Exporter가 9404 포트를 중복으로 사용하여 unhealthy가 되는 것을 방지할 수 있다.
+```
+
 
 ## 📨 RedPanda (Kafka 프로토콜 호환 브로커)
 

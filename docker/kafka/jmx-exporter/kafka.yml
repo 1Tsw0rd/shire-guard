@@ -1,0 +1,35 @@
+# ── JMX 메트릭 수집 규칙 ──
+# Kafka의 JMX 메트릭 중 Shire Guard 모니터링에 필요한 항목만 노출
+
+rules:
+  # Kafka 브로커 현재 상태
+  - pattern: 'kafka.server<type=KafkaServer, name=BrokerState><>Value'
+    name: kafka_server_broker_state
+
+  # Kafka 브로커 토픽별 메시지 입출력 처리량
+  - pattern: 'kafka.server<type=BrokerTopicMetrics, name=(MessagesInPerSec|BytesInPerSec|BytesOutPerSec)><>OneMinuteRate'
+    name: kafka_server_brokertopicmetrics_$1_rate
+
+  # Kafka 요청 처리 중 발생한 오류
+  - pattern: 'kafka.network<type=RequestMetrics, name=ErrorsPerSec, request=(.+), error=(.+)><>OneMinuteRate'
+    name: kafka_network_request_errors_rate
+    labels:
+      request: "$1" # 오류가 발생한 request 종류
+      error: "$2"   # 발생한 오류 종류
+
+  # 복제가 정상적으로 유지되지 않는 Partition 수
+  - pattern: 'kafka.server<type=ReplicaManager, name=UnderReplicatedPartitions><>Value'
+    name: kafka_server_under_replicated_partitions
+
+  # Kafka 로그 저장 디렉터리 장애 수
+  - pattern: 'kafka.log<type=LogManager, name=OfflineLogDirectoryCount><>Value'
+    name: kafka_log_offline_log_directory_count
+
+  # 현재 활성 Controller 브로커 수
+  - pattern: 'kafka.controller<type=KafkaController, name=ActiveControllerCount><>Value'
+    name: kafka_controller_active_controller_count
+
+  # Kafka Request Handler 유휴 비율
+  # 값이 낮아질수록 요청 처리 부하가 높다는 뜻
+  - pattern: 'kafka.server<type=KafkaRequestHandlerPool, name=RequestHandlerAvgIdlePercent><>OneMinuteRate'
+    name: kafka_server_request_handler_avg_idle_percent
