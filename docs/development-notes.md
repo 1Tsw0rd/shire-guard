@@ -679,42 +679,70 @@ Grafana에서 시계열 그래프로 확인 가능해짐
 
 ## 🦀 Rust Backend (Axum)
 
-Kafka/RedPanda Consumer와 HTTP API 서버 역할을 함께 수행하는 Rust 기반 Backend
+Kafka/RedPanda Consumer와 HTTP API 서버 역할을 함께 수행하는 Rust 기반 Backend.
 
-Kafka/RedPanda Consumer + HTTP API 서버. 컨테이너가 아니라 호스트에서 `cargo run`으로 직접 실행 (Docker 서비스 목록에 없음)
+컨테이너가 아니라 호스트에서 `cargo run`으로 직접 실행하며, Docker 서비스 목록에는 포함되지 않는다.
 
 ### 1. 실행
+
 ```bash
 cd backend
 cargo run
 ```
 
 ### 2. 확인
+
 ```bash
 curl http://localhost:3001/health    # ok 응답
 curl http://localhost:3001/metrics   # Prometheus 형식 metric 노출
 ```
 
 ### 3. Prometheus 메트릭 노출
-`common/metrics.rs`에서 파이프라인 지표 관리, `/metrics` 엔드포인트로 노출.
 
-- `shireguard_consumer_messages_received_total` — Consumer가 수신한 메시지 수
-- `shireguard_consumer_events_parsed_total` — RawEvent 파싱 성공 수
-- `shireguard_consumer_events_failed_total` — RawEvent 파싱 실패 수 (빈 메시지 포함)
-- `shireguard_config_active_broker{broker="kafka|redpanda"}` — 현재 MESSAGE_BROKER 설정
+`common/metrics.rs`에서 Rust 애플리케이션의 Consumer 및 Broker 상태 metric을 관리하고, `/metrics` 엔드포인트를 통해 Prometheus 형식으로 노출한다.
 
-불변식: `received = parsed + failed`
+* `shireguard_consumer_messages_received_total` — Consumer가 브로커에서 수신한 메시지 수
+* `shireguard_consumer_events_parsed_total` — RawEvent 파싱 성공 수
+* `shireguard_consumer_events_failed_total` — RawEvent 파싱 실패 수 (빈 메시지 포함)
+* `shireguard_config_active_broker{broker="kafka|redpanda"}` — 현재 `MESSAGE_BROKER` 설정
+* `shireguard_consumer_broker_connected` — Consumer가 Broker 연결 상태를 주기적으로 관측하여 연결 상태를 `0` 또는 `1`로 표시
+
+불변식:
+
+```text
+received = parsed + failed
+```
+
+#### Broker 연결 상태 및 재연결 테스트
+
+`rdkafka`의 `ClientContext::stats()` callback을 사용하여 Broker 연결 상태를 관측한다.
+
+`librdkafka`가 Broker 재연결을 담당하며, Rust Consumer는 연결 상태 변화를 metric과 로그로 기록한다.
+
+Kafka를 중지했다가 다시 시작하는 동안 Rust 프로세스는 재시작하지 않고 그대로 두어 연결 상태 변화를 확인했다.
+
+```text
+17:22:59 [CONSUMER CREATED]
+17:23:14 [BROKER CONNECTED] 최초 연결
+17:23:42 AllBrokersDown 시작
+17:23:44 [BROKER DISCONNECTED] 연결 끊김 감지
+17:24:14 [BROKER CONNECTED] 재연결 성공
+```
+
+Prometheus metric도 다음과 같이 `1 → 0 → 1`로 변화하는 것을 확인했다.
+
+```text
+1 → 정상 연결
+0 → Broker 연결 끊김
+1 → Broker 재연결
+```
 
 ### 참고사항
- 평소 로그 노이즈 방지를 위해 `[EVENT PARSED]`는 `debug!` 레벨,
-`/metrics` 스크레이프 요청은 `request_id_middleware`에서 완료 로그 제외 처리함
-(`common/middleware.rs`). 필요 시 `.env`의 `RUST_LOG`를 임시로 올려서 확인.
 
+평소 로그 노이즈 방지를 위해 `[EVENT PARSED]`는 `debug!` 레벨로 기록한다.
 
+`/metrics` 스크레이프 요청은 `request_id_middleware`에서 완료 로그를 제외 처리한다.
 
+(`common/middleware.rs`)
 
-
-
-
-
-
+필요 시 `.env`의 `RUST_LOG`를 임시로 조정하여 상세 로그를 확인한다.

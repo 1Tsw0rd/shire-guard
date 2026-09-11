@@ -46,7 +46,7 @@ async fn main() {
     let metrics = Arc::new(Metrics::new(&config.broker).expect("metrics 초기화 실패"));
 
     // Kafka/RedPanda Consumer를 백그라운드 태스크로 실행 (HTTP 서버와 별개로 계속 동작)
-    let consumer = kafka::build_consumer(&config.broker).expect("Kafka Consumer 생성 실패");
+    let consumer = kafka::build_consumer(&config.broker, metrics.clone()).expect("Kafka Consumer 생성 실패");
     let topic = config.broker.topic.clone();
     tokio::spawn(kafka::run(consumer, topic, metrics.clone()));
 

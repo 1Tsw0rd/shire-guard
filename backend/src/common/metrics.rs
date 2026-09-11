@@ -14,12 +14,7 @@
 // Rust Axum의 /metrics API에서 Prometheus가 읽을 수 있는 텍스트 형식으로 변환해서 반환한다.
 
 use prometheus::{
-    Encoder, // Encoder: metric 데이터를 바이트로 직렬화하는 방법을 정의하는 trait
-    GaugeVec, // GaugeVec: label별로 나뉜 게이지(오르내릴 수 있는 값) 모음
-    IntCounter, // IntCounter: 정수 전용 카운터 (증가만 가능)
-    Opts, // Opts: metric의 이름/설명을 담는 옵션 객체
-    Registry, // Registry: 등록된 모든 metric을 모아두는 저장소
-    TextEncoder // TextEncoder: Registry에서 꺼낸 metric을 Prometheus 텍스트 포맷으로 변환하는 인코더
+    Encoder, GaugeVec, IntCounter, IntGauge, Opts, Registry, TextEncoder
 };
 
 use crate::common::error::AppError;
@@ -30,6 +25,7 @@ pub struct Metrics {
     pub consumer_messages_received: IntCounter,
     pub consumer_events_parsed: IntCounter,
     pub consumer_events_failed: IntCounter,
+    pub consumer_broker_connected: IntGauge,
 }
 
 impl Metrics {
@@ -69,6 +65,14 @@ impl Metrics {
             AppError::Internal(format!(
                 "shireguard_consumer_events_failed_total 생성 실패: {e}"
             ))
+        })?;
+
+        let consumer_broker_connected = IntGauge::new(
+            "shireguard_consumer_broker_connected",
+            "Consumer와 Broker 현재 연결 상태 (0=끊김, 1=연결됨)",
+        )
+        .map_err(|e| {
+            AppError::Internal(format!("shireguard_consumer_broker_connected 생성 실패: {e}"))
         })?;
 
         // 현재 docker/.env 안에 MESSAGE_BROKER 설정값을 노출하는 게이지로 Grafana에서 표시
@@ -119,12 +123,16 @@ impl Metrics {
         registry
             .register(Box::new(config_active_broker))
             .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(consumer_broker_connected.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
 
         Ok(Self {
             registry,
             consumer_messages_received,
             consumer_events_parsed,
             consumer_events_failed,
+            consumer_broker_connected,
         })
     }
 
