@@ -635,6 +635,7 @@ http://localhost:9090
 | RedPanda | `redpanda:9644/public_metrics` |
 | Kafka | `kafka:9404/metrics` |
 | cAdvisor | `cadvisor:8080/metrics` |
+| Rust Backend | `host.docker.internal:3001/metrics` |
 
 ### 4. 기본 쿼리 확인
 웹 UI의 Graph 탭에서 쿼리 입력 후 실행 가능:
@@ -674,3 +675,46 @@ http://localhost:8082/metrics
 `docker/prometheus/prometheus.yml`에 스크래핑 대상으로 등록하면,
 cAdvisor가 수집한 데이터를 Prometheus가 가져가 장기 보관하고
 Grafana에서 시계열 그래프로 확인 가능해짐
+
+
+## 🦀 Rust Backend (Axum)
+
+Kafka/RedPanda Consumer와 HTTP API 서버 역할을 함께 수행하는 Rust 기반 Backend
+
+Kafka/RedPanda Consumer + HTTP API 서버. 컨테이너가 아니라 호스트에서 `cargo run`으로 직접 실행 (Docker 서비스 목록에 없음)
+
+### 1. 실행
+```bash
+cd backend
+cargo run
+```
+
+### 2. 확인
+```bash
+curl http://localhost:3001/health    # ok 응답
+curl http://localhost:3001/metrics   # Prometheus 형식 metric 노출
+```
+
+### 3. Prometheus 메트릭 노출
+`common/metrics.rs`에서 파이프라인 지표 관리, `/metrics` 엔드포인트로 노출.
+
+- `shireguard_consumer_messages_received_total` — Consumer가 수신한 메시지 수
+- `shireguard_consumer_events_parsed_total` — RawEvent 파싱 성공 수
+- `shireguard_consumer_events_failed_total` — RawEvent 파싱 실패 수 (빈 메시지 포함)
+- `shireguard_config_active_broker{broker="kafka|redpanda"}` — 현재 MESSAGE_BROKER 설정
+
+불변식: `received = parsed + failed`
+
+### 참고사항
+ 평소 로그 노이즈 방지를 위해 `[EVENT PARSED]`는 `debug!` 레벨,
+`/metrics` 스크레이프 요청은 `request_id_middleware`에서 완료 로그 제외 처리함
+(`common/middleware.rs`). 필요 시 `.env`의 `RUST_LOG`를 임시로 올려서 확인.
+
+
+
+
+
+
+
+
+

@@ -24,4 +24,8 @@ scrape_configs:
 
   - job_name: "kafka"
     static_configs:
-      - targets: ["kafka:9404"]
+      - targets: ["kafka:9404"] # JMX Exporter가 Kafka JVM의 JMX 메트릭을 Prometheus 형식으로 노출하는 포트
+
+  - job_name: "backend"
+    static_configs:
+      - targets: ["host.docker.internal:3001"] # 호스트에서 실행 중인 Rust Backend의 /metrics 엔드포인트

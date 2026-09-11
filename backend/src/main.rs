@@ -2,10 +2,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::State; // Axum 익스트랙터: .with_state(state)로 넘긴 앱 전역 상태를 핸들러 인자로 꺼내 쓸 수 있게 해줌
 use axum::routing::get;
 use sqlx::postgres::PgPoolOptions;
 
+use backend::common::error::AppError;
 use backend::common::fallback::not_found;
+use backend::common::metrics::Metrics;
 use backend::common::middleware::request_id_middleware;
 use backend::config::AppConfig;
 use backend::core::consumer::kafka;
@@ -39,16 +42,20 @@ async fn main() {
         .expect("PostgreSQL 연결 실패");
     tracing::info!("[DB CONNECTED] PostgreSQL 서버 연결 성공");
 
+    // Prometheus metrics 초기화 (config.broker 기준으로 active_broker 게이지 세팅)
+    let metrics = Arc::new(Metrics::new(&config.broker).expect("metrics 초기화 실패"));
+
     // Kafka/RedPanda Consumer를 백그라운드 태스크로 실행 (HTTP 서버와 별개로 계속 동작)
     let consumer = kafka::build_consumer(&config.broker).expect("Kafka Consumer 생성 실패");
     let topic = config.broker.topic.clone();
-    tokio::spawn(kafka::run(consumer, topic));
+    tokio::spawn(kafka::run(consumer, topic, metrics.clone()));
 
     // Axum HTTP 서버 구성 및 실행
-    let state = Arc::new(AppState { postgres });
+    let state = Arc::new(AppState { postgres, metrics });
 
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/metrics", get(metrics_handler))
         .fallback(not_found)
         .layer(axum::middleware::from_fn(request_id_middleware))
         .with_state(state);
@@ -63,4 +70,8 @@ async fn main() {
 
 async fn health_check() -> &'static str {
     "ok"
+}
+
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> Result<String, AppError> {
+    state.metrics.encode()
 }

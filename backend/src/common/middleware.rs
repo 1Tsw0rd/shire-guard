@@ -41,6 +41,9 @@ pub async fn request_id_middleware(
     req: Request<Body>, // HTTP Request 객체 (method, uri, header, body 포함)
     next: Next,         // 다음 middleware 또는 handler 실행 (NestJS의 next()와 유사)
 ) -> Response {
+    // Prometheus가 15초마다 스크레이프하는 /metrics 요청인지 미리 판별해둠
+    let is_metrics_scrape = req.uri().path() == "/metrics";
+
     // 요청마다 고유한 Request ID 생성
     let request_id = Uuid::new_v4().to_string();
 
@@ -58,12 +61,16 @@ pub async fn request_id_middleware(
     // 같은 request_id로 controller/service/repository 로그 추적 가능
     let mut response = next.run(req).instrument(span.clone()).await;
 
-    // response 완료 로그 기록
-    // parent: &span 지정하면 해당 request 완료 로그가 request 로그 트리에 포함됨
-    info!(
-        parent: &span,
-        "request completed"
-    );
+
+     // /metrics 스크레이프는 완료 로그에서 제외(이렇게 안하면 계속 찍힘)
+    if !is_metrics_scrape {
+        // response 완료 로그 기록
+        // parent: &span 지정하면 해당 request 완료 로그가 request 로그 트리에 포함됨
+        info!(
+            parent: &span,
+            "request completed"
+        );
+    }
 
     // response header에 request id 추가
     // 장애 분석 시 클라이언트가 받은 request id로 서버 로그 검색 가능
