@@ -14,7 +14,7 @@ include:
   - docker-compose.grafana.yml
   - docker-compose.postgres.yml
   - docker-compose.redis.yml
-  # - docker-compose.dragonfly.yml
+  - docker-compose.dragonfly.yml
   - docker-compose.prometheus.yml
   - docker-compose.cadvisor.yml
   

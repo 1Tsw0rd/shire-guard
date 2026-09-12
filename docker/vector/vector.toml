@@ -41,11 +41,11 @@ if exists(.file_sha256) {
 
 
 # ── Sinks: 가공된 이벤트를 최종적으로 어디로 보낼지 정의 ──────────
-# 지금은 결과를 눈으로 확인하기 위해 console(터미널 로그)로 출력
-[sinks.console_out]
-type = "console"
-inputs = ["normalize"]     # transform 결과를 받아서 출력
-encoding.codec = "json"    # sink는 encoding을 씀: 내부 이벤트를 다시 바이트/텍스트로 부호화해서 내보내는 단계
+# 결과를 눈으로 확인하기 위해 console(터미널 로그)로 출력
+#[sinks.console_out]
+#type = "console"
+#inputs = ["normalize"]     # transform 결과를 받아서 출력
+#encoding.codec = "json"    # sink는 encoding을 씀: 내부 이벤트를 다시 바이트/텍스트로 부호화해서 내보내는 단계
 
 # kafka 전용
 [sinks.kafka_out]
@@ -92,3 +92,45 @@ type = "internal_metrics"
 type = "prometheus_exporter"
 inputs = ["internal_metrics"]
 address = "0.0.0.0:9598"
+
+# ── Sink Buffer 정책 및 테스트 ──────────────────────────────────────────────
+# Opensearch/Clickhouse Sink 장애 격리용 disk buffer
+# Sink 장애 또는 서비스 종료 된 경우 vector로 유입되는 이벤트가 각 Sink 버퍼에 쌓일 수 있음
+# Sink 버퍼 하나가 가득 차는 경우 normalize(fan-out 지점) 전체를 block시켜서 정상적인 Sink들의 흐름까지 Block 함
+# (Vector 동작이 멈춘거나 마찬가지인 현상)
+# 멈추는 현상을 방지하기 위해 장애가 있는 상황을 고려하여
+# Opensearch/Clickhouse는 disk buffer를 사용하여 가득 차기 전에 담당자가 Vector가 먹통되기 전까지의 조치할 수 있는 시간을 벌이는 장치로 해당 설정함
+# Disk Buffer가 가득차기 전 조치할 경우 데이터 유실을 방지할 수 있는 효과를 기대하고
+# Disk Buffer가 가득찰 경우(max_size) 다른 정상 Sink들을 방해하지 않도록 새로 유입되는 이벤트들은 drop_newest 설정으로 버리도록 조치함
+#
+# memory buffer는 이벤트를 buffer에 쌓아두지 않고 즉시 producer(librdkafka)로 넘김
+# producer가 브로커 전송에 실패하면 그 즉시 discard되며, 이때 max_events는 사실상
+# "buffer 점유 상한"이 아니라 "실패 판정 이전에 producer 큐에 쌓일 수 있는 최대치" 역할만 함
+# (실측: buffer_size_events가 실행 내내 0을 유지하고, discarded_events_total만 증가함)
+# 아래 설정에서 max_events만큼 이벤트가 찰 경우 새로 유입되는 이벤트들은 drop_newest 설정으로 버림
+#
+# drop_newest 설정으로 정상 Sink들은 계속 정상 운영이 가능하고,
+# 문제가 있는 Sink는 담당자가 조치하여 이벤트 유실을 최소화하는 전략을 연습함
+#
+# 이 테스트 설정은 Kafka/RedPanda의 동작을 방해하지 않게 하는 위한 목적을 가지며
+# 테스트 종료 시, 실제 사용하는 Kafka 또는 RedPanda 둘 중 하나만 활성화하고 나머지는 주석처리 예정
+
+[sinks.clickhouse_out.buffer]
+type = "disk"
+max_size = 1073741824   # 1GB만큼 disk로 이벤트 저장함
+when_full = "drop_newest" # max_size 초과할 경우 새로 들어오는 event 들은 버림, disk 타입 버퍼는 쓰이지 않은 이벤트는 disk에 저장되어 처리할 기회 제공
+
+[sinks.opensearch_out.buffer]
+type = "disk"
+max_size = 1073741824   # 1GB
+when_full = "drop_newest"
+
+[sinks.kafka_out.buffer]
+type = "memory"
+max_events = 10000   # 1만개 event가 쌓일 경우
+when_full = "drop_newest" # 새로  새로 들어오는 event들은 버림, memory 타입 버퍼는 쓰이지 않은 이벤트는 바로바로 버림
+
+[sinks.redpanda_out.buffer]
+type = "memory"
+max_events = 10000
+when_full = "drop_newest"

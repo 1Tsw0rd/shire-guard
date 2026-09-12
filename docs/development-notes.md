@@ -737,6 +737,10 @@ Prometheus metric도 다음과 같이 `1 → 0 → 1`로 변화하는 것을 확
 1 → Broker 재연결
 ```
 
+⚠️ Kafka/RedPanda 재시작 시 주의
+- stop/start: 데이터 유지, 안전
+- down/up: 데이터+토픽 전부 삭제 → 토픽 재생성 필요 + Rust 재시작 필수 (안 하면 재구독 실패)
+
 ### 참고사항
 
 평소 로그 노이즈 방지를 위해 `[EVENT PARSED]`는 `debug!` 레벨로 기록한다.
