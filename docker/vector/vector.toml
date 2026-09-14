@@ -63,6 +63,25 @@ bootstrap_servers = "redpanda:9092"
 topic = "${KAFKA_TOPIC}"
 encoding.codec = "json"
 
+# ── Kafka Producer 성능 튜닝 옵션 ─────────────────────────
+# 2026-09-14 실측: batching 튜닝(linger.ms/batch.size/compression) + acks/idempotence 조합으로
+# 테스트 하였으나 옵션별 처리량 차이 약 2~3%로 유의미하지 않음
+# 현재 규모(15,000건/run, 단일 브로커, RF=1)에서는 기본값 사용
+# (TODO 대규모 지속 부하 테스트 시 재검토)
+#[sinks.kafka_out.librdkafka_options]
+#"linger.ms" = "20"              # default 5ms → 더 오래 모아 더 큰 batch 구성
+#"batch.size" = "2000000"        # default 1MB → producer batch 최대 2MB
+#"compression.type" = "lz4"      # default none → Kafka batch 압축 → 네트워크 전송량 감소
+#"enable.idempotence" = "true"   # default false → 재시도 시 중복 전송 방지(acks와 함께 사용 불가)
+#"acks" = "1"  # default -1/all
+
+#[sinks.redpanda_out.librdkafka_options]
+#"linger.ms" = "20"
+#"batch.size" = "2000000"
+#"compression.type" = "lz4"
+#"enable.idempotence" = "true"
+#"acks" = "1"
+
 # opensearch 전용
 [sinks.opensearch_out]
 type = "elasticsearch"    # OpenSearch도 Elasticsearch 프로토콜 호환이라 이 타입 사용
