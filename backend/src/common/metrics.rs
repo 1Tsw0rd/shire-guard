@@ -13,9 +13,7 @@
 // 생성한 metric은 Registry에 등록하고,
 // Rust Axum의 /metrics API에서 Prometheus가 읽을 수 있는 텍스트 형식으로 변환해서 반환한다.
 
-use prometheus::{
-    Encoder, GaugeVec, IntCounter, IntGauge, Opts, Registry, TextEncoder
-};
+use prometheus::{Encoder, GaugeVec, IntCounter, IntGauge, Opts, Registry, TextEncoder};
 
 use crate::common::error::AppError;
 use crate::config::{BrokerConfig, MessageBroker};
@@ -72,7 +70,9 @@ impl Metrics {
             "Consumer와 Broker 현재 연결 상태 (0=끊김, 1=연결됨)",
         )
         .map_err(|e| {
-            AppError::Internal(format!("shireguard_consumer_broker_connected 생성 실패: {e}"))
+            AppError::Internal(format!(
+                "shireguard_consumer_broker_connected 생성 실패: {e}"
+            ))
         })?;
 
         // 현재 docker/.env 안에 MESSAGE_BROKER 설정값을 노출하는 게이지로 Grafana에서 표시
@@ -91,7 +91,7 @@ impl Metrics {
 
         let broker_label = match broker_config.broker {
             MessageBroker::Kafka => "kafka",
-            MessageBroker::RedPanda => "redpanda"
+            MessageBroker::RedPanda => "redpanda",
         };
 
         // 하나를 찾거나 새로 만들고, set(1.0)이 그 값을 1로 세팅함

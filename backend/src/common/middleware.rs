@@ -61,8 +61,7 @@ pub async fn request_id_middleware(
     // 같은 request_id로 controller/service/repository 로그 추적 가능
     let mut response = next.run(req).instrument(span.clone()).await;
 
-
-     // /metrics 스크레이프는 완료 로그에서 제외(이렇게 안하면 계속 찍힘)
+    // /metrics 스크레이프는 완료 로그에서 제외(이렇게 안하면 계속 찍힘)
     if !is_metrics_scrape {
         // response 완료 로그 기록
         // parent: &span 지정하면 해당 request 완료 로그가 request 로그 트리에 포함됨

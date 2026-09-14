@@ -49,7 +49,7 @@ impl ClientContext for KafkaConsumerContext {
     fn stats(&self, statistics: Statistics) {
         // nodeid >= 0인 것만 실제 브로커로 취급 (nodeid -1은 부트스트랩용 가짜 항목)
         // 그중 하나라도 state == "UP"이면 연결된 것으로 판단
-        let is_connected  = statistics
+        let is_connected = statistics
             .brokers
             .values()
             .filter(|b| b.nodeid >= 0)
@@ -72,7 +72,6 @@ impl ClientContext for KafkaConsumerContext {
     }
 }
 
-
 // Kafka Consumer에서 사용할 Context가 ConsumerContext trait도 구현하도록 선언
 //
 // ConsumerContext에는 rebalance, commit callback 등 Consumer 동작과 관련된 여러 callback이 정의되어 있다.
@@ -82,8 +81,10 @@ impl ClientContext for KafkaConsumerContext {
 // "이 타입은 Consumer 컨텍스트로 쓸 수 있다"는 선언 자체가 핵심
 impl ConsumerContext for KafkaConsumerContext {}
 
-
-pub fn build_consumer(config: &BrokerConfig, metrics: Arc<Metrics>,) -> Result<StreamConsumer<KafkaConsumerContext>, AppError> {
+pub fn build_consumer(
+    config: &BrokerConfig,
+    metrics: Arc<Metrics>,
+) -> Result<StreamConsumer<KafkaConsumerContext>, AppError> {
     // 우리가 만든 KafkaConsumerContext 객체 생성
     // Context 안에 Prometheus Metrics를 넣어둔다.
     // 여기 담긴 metrics가 나중에 stats() 콜백 안에서 게이지를 갱신하는 데 쓰인다.
@@ -98,7 +99,7 @@ pub fn build_consumer(config: &BrokerConfig, metrics: Arc<Metrics>,) -> Result<S
         // 일반적인 Consumer 생성(create) 대신
         // 위에서 우리가 만든 KafkaConsumerContext 연결해서 Consumer 생성(create_with_context)
         // 이렇게 생성하면 librdkafka가 통계 정보를 전달할 때(statistics.interval.ms 주기)
-        // Consumer는 자동으로 context의 stats()를 호출해줌 
+        // Consumer는 자동으로 context의 stats()를 호출해줌
         .create_with_context(context)
         .map_err(|e| AppError::Internal(format!("Kafka Consumer 생성 실패: {e}")))?;
 
@@ -111,7 +112,11 @@ pub fn build_consumer(config: &BrokerConfig, metrics: Arc<Metrics>,) -> Result<S
     Ok(consumer)
 }
 
-pub async fn run(consumer: StreamConsumer<KafkaConsumerContext>, topic: String, metrics: Arc<Metrics>) {
+pub async fn run(
+    consumer: StreamConsumer<KafkaConsumerContext>,
+    topic: String,
+    metrics: Arc<Metrics>,
+) {
     // Topic 구독
     if let Err(e) = consumer.subscribe(&[&topic]) {
         tracing::error!(error = %e, %topic, "[TOPIC SUBSCRIBE FAILED] 토픽 구독 실패");
