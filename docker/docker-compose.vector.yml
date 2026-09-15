@@ -7,6 +7,7 @@ services:
     ports:
       - "${VECTOR_PORT}:${VECTOR_PORT}"
       - "${VECTOR_API_PORT}:${VECTOR_API_PORT}"  # API/healthcheck 포트
+      - "${VECTOR_METRICS_PORT:?VECTOR_METRICS_PORT가 설정되지 않았습니다}:9598"  # Vector 내부 메트릭을 Prometheus 형식으로 노출
     environment:
       - VECTOR_PORT=${VECTOR_PORT:?VECTOR_PORT가 설정되지 않았습니다}
       - VECTOR_API_PORT=${VECTOR_API_PORT:?VECTOR_API_PORT가 설정되지 않았습니다}
@@ -18,8 +19,8 @@ services:
       # Vector config 내 ${VAR} interpolation 허용
       - VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION=true
     volumes:
-      - ./vector/vector.toml:/etc/vector/vector.toml:ro
-      # 로컬 설정 파일을 컨테이너 안 경로에 읽기 전용(ro)으로 마운트
+      - ./vector/vector.toml:/etc/vector/vector.toml:ro  # 로컬 설정 파일을 컨테이너 안 경로에 읽기 전용(ro)으로 마운트
+      - ./vector/data:/var/lib/vector  # disk buffer 영속화
     command: ["--config", "/etc/vector/vector.toml"]
       # vector 실행 시 이 설정 파일을 쓰라고 명시적으로 지정
     healthcheck:

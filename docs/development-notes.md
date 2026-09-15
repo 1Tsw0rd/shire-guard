@@ -64,6 +64,51 @@
                    OpenSearch       ClickHouse
                   (조회/검색용)      (집계/통계용)
 
+## 모니터링 아키텍처
+
+     ┌────────────────┐       ┌──────────────────────────────┐
+     │    cAdvisor    │       │       Monitored Services     │
+     │                │       │                              │
+     │ 모든 컨테이너의  │       │ Vector                       │
+     │ 리소스 수집      │       │ Kafka / RedPanda            │
+     │                │       │ Redis / Dragonfly            │
+     │ CPU / Memory   │       │ PostgreSQL                   │
+     │ Network        │       │ OpenSearch                   │
+     │ UP / DOWN      │       │ ClickHouse                   │
+     └───────┬────────┘       │ Rust Axum                    │
+             │                │ Ollama                       │
+             │                │                              │
+             │                │ Pipeline Metrics             │
+             │                └──────────────┬───────────────┘
+             │                               │
+             └───────────────┬───────────────┘
+                             │
+                   Prometheus scrape (Metrics)
+                             │
+                             ▼
+                    ┌──────────────────────┐
+                    │      Prometheus      │
+                    │    메트릭 수집 · 저장  │
+                    └──────────┬───────────┘
+                               │
+                         PromQL 조회
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │       Grafana        │
+                    │   시각화 · 알림 · 로그  │
+                    │   조회 · Alert History│
+                    └─────────┬────────────┘
+                              │
+                       LogQL / State History
+                              │
+                              ▼
+                    ┌──────────────────────┐
+                    │         Loki         │
+                    │    로그 · Alert State │
+                    │       History 저장    │
+                    └──────────────────────┘
+
 ## 보고서 생성 - hwpx
 * 단건 이벤트 보고서
 * 집계(주간) 이벤트 보고서
@@ -301,7 +346,7 @@ curl -X POST http://localhost:8081 \
 ```
 컨슈머 화면에 변환된 JSON이 뜨면 Vector → Kafka 파이프라인 정상.
 
-### 참고: 소비 상태 확인
+### 6. 참고: 소비 상태 확인
 
 ```bash
 # 토픽 오프셋(쌓인 메시지 수) 확인
@@ -315,6 +360,49 @@ docker exec -it kafka //opt/kafka/bin/kafka-consumer-groups.sh \
   --describe \
   --group test-group
 ```
+
+### 7. JMX Exporter (Prometheus 메트릭 노출)
+
+- https://prometheus.github.io/jmx_exporter/
+
+Kafka는 RedPanda처럼 기본 Prometheus Metrics endpoint를
+바로 제공하지 않는다.
+
+따라서 Kafka JVM에 Prometheus JMX Exporter를
+Java Agent 방식으로 주입해 JMX 메트릭을 Prometheus 형식으로 노출한다.
+
+별도 컨테이너나 원격 JMX 포트 없이
+Kafka JVM에서 직접 `/metrics`를 제공한다.
+
+관련 파일:
+
+```text
+docker/kafka/jmx-exporter/
+├── jmx_prometheus_javaagent-1.6.0.jar
+└── kafka.yml
+````
+
+`docker-compose.kafka.yml`에서 Java Agent를 Kafka JVM에 연결한다.
+
+```yaml
+volumes:
+  - ./kafka/jmx-exporter:/opt/jmx-exporter:ro
+
+environment:
+  KAFKA_OPTS: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-1.6.0.jar=9404:/opt/jmx-exporter/kafka.yml"
+
+healthcheck:
+  test:
+    [
+      "CMD-SHELL",
+      'KAFKA_OPTS="" /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${KAFKA_PORT} || exit 1'
+    ]
+
+# 참고: `KAFKA_OPTS`는 Kafka CLI가 실행하는 JVM에도 상속될 수 있어,
+# 기존 healthcheck 커맨드에서도 `KAFKA_OPTS=""`로 명시적으로 비워줘야
+# JMX Exporter가 9404 포트를 중복으로 사용하여 unhealthy가 되는 것을 방지할 수 있다.
+```
+
 
 ## 📨 RedPanda (Kafka 프로토콜 호환 브로커)
 
@@ -440,19 +528,9 @@ docker/clickhouse/init/ 폴더의 SQL이 최초 실행 시 자동 적용됨.
 SELECT * FROM shire.security_events
 ```
 
-## 📈 Grafana (모니터링, 추후 본격 활용 예정)
-
-현재 컨테이너만 띄워둔 상태. ClickHouse 집계 데이터가 쌓이면 
-통합 대시보드로 활용 예정. (http://localhost:3000, admin/admin)
-
-### 컨테이너 실행
-```bash
-docker compose -f docker-compose.yml  -f docker-compose.grafana.yml up -d grafana
-```
-
 ## 🐘 PostgreSQL (Playbook 설정 저장소)
 
-오픈소스 객체 관계형 데이터베이스로, 구조화된 데이터를 안정적으로 저장하고 관리할 수 있음.
+오픈소스 객체 관계형 데이터베이스로, 구조화된 데이터를 안정적으로 저장하고 관리할 수 있음
 
 Playbook 정의(조건 노드, AI 분석 노드 설정)를 저장
 
@@ -473,11 +551,11 @@ docker exec -it postgres psql -U ${POSTGRES_USER} -d ${POSTGRES_DB}
 ## 🧰 Redis / Dragonfly (캐싱)
 
 인메모리 Key-Value 저장소. Dragonfly는 Redis 프로토콜과 호환되는 대체 구현체.
-빠른 조회가 필요한 데이터에 사용. 기본은 휘발성이지만 AOF 등으로 영속화도 가능.
+빠른 조회가 필요한 데이터에 사용. 기본은 휘발성이지만 AOF 등으로 영속화도 가능
 
 AbuseIPDB/VirusTotal 등 외부 API 조회 결과(IP 평판, 파일 해시 판정)를 캐싱해 
 동일 IOC의 중복 조회를 방지하고 API rate limit을 절약. 재시작 후에도 데이터가 
-유지되도록 영속 볼륨(AOF) 사용.
+유지되도록 영속 볼륨(AOF) 사용
 
 ### 1. 컨테이너 실행
 ```bash
@@ -502,5 +580,247 @@ TTL key                  # 남은 만료 시간(초) 확인
 PING                     # 연결 확인 (PONG 응답)
 ```
 
-### 4. 연결 정보
-`backend/.env`의 `CACHE_BACKEND`, `REDIS_*`/`DRAGONFLY_*` 값에서 관리.
+
+## 📈 Grafana (모니터링 대시보드)
+
+서비스 상태와 리소스 사용량을 한눈에 확인할 수 있는 모니터링 대시보드 도구
+
+### 컨테이너 실행
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.grafana.yml up -d grafana
+```
+
+### Web UI 접속
+
+```text
+http://localhost:3000
+```
+
+기본 로그인: `admin / admin`
+
+
+## 📈 Prometheus (메트릭 수집기)
+
+오픈소스 모니터링 시스템으로, 각 서비스에서 제공하는 메트릭(metric)​을 주기적으로 가져와 시계열 데이터로 저장
+(Grafana 혼자서는 데이터를 수집하지 못하고, Prometheus 같은 데이터 소스가 있어야 시각화할 대상이 생김)
+
+로그처럼 상세한 사건 내용을 저장하는 것이 아니라,
+- CPU 사용량
+- 메모리 사용량
+- 요청 수
+- 처리 성공/실패 횟수
+- 이벤트 처리량
+
+같은 숫자 형태의 상태 정보를 시간에 따라 수집하고 조회하는 데 사용
+
+Vector/Kafka/RedPanda/Rust 등 파이프라인 각 단계가 "몇 개를 처리했는지"를 
+Prometheus가 계속 가져가 쌓아두면, Grafana에서 "Vector는 100개를 보냈는데 
+Rust는 0개를 받았다"처럼 구간별 수치를 비교해 이상 징후를 발견할 수 있음
+
+### 1. 컨테이너 실행
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prometheus.yml up -d prometheus
+```
+
+### 2. 웹 UI 접속
+```
+http://localhost:9090
+```
+상단 메뉴의 Status → Targets에서, 등록된 각 서비스가 정상적으로 수집되고 있는지(`UP`) 확인 가능.
+
+### 3. 스크래핑 대상 설정
+`docker/prometheus/prometheus.yml`에서 관리. 어떤 서비스의 어떤 주소에서 
+메트릭을 가져올지 여기에 등록해야 Prometheus가 수집을 시작함
+
+`docker/prometheus/prometheus.yml`에서 관리.
+어떤 서비스의 어떤 endpoint에서 메트릭을 가져올지 정의한다.
+
+현재 대상:
+
+| 서비스 | Target |
+|---|---|
+| Prometheus | `localhost:9090` |
+| Vector | `vector:9598/metrics` |
+| RedPanda | `redpanda:9644/public_metrics` |
+| Kafka | `kafka:9404/metrics` |
+| cAdvisor | `cadvisor:8080/metrics` |
+| Rust Backend | `host.docker.internal:3001/metrics` |
+
+### 4. 기본 쿼리 확인
+웹 UI의 Graph 탭에서 쿼리 입력 후 실행 가능:
+```
+up
+```
+등록된 모든 대상의 생존 여부(1=정상, 0=응답 없음) 한눈에 확인
+
+
+## 📊 cAdvisor (컨테이너 리소스 모니터링)
+
+Google이 만든 오픈소스 도구로, 실행 중인 모든 Docker 컨테이너의 
+CPU/메모리/디스크/네트워크 사용량을 자동으로 수집해 Prometheus 포맷으로 노출함
+
+컨테이너 하나만 띄우면 Kafka, Vector, Rust 등 다른 모든 서비스의 리소스
+상태를 별도 설정 없이 한 번에 모니터링 대상으로 만들 수 있음
+(서비스별로 각각 exporter를 붙일 필요 없음)
+
+호스트 시스템(파일시스템, cgroup 등)에 깊이 접근해야 하는 특성상
+`privileged: true`와 다수의 읽기 전용 마운트가 필요함
+
+### 1. 컨테이너 실행
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cadvisor.yml up -d cadvisor
+```
+
+### 2. 웹 UI 접속
+```
+# Web UI
+http://localhost:8082
+
+# Metrics 확인
+http://localhost:8082/metrics
+```
+
+### 3. Prometheus 연동 (다음 단계)
+`docker/prometheus/prometheus.yml`에 스크래핑 대상으로 등록하면,
+cAdvisor가 수집한 데이터를 Prometheus가 가져가 장기 보관하고
+Grafana에서 시계열 그래프로 확인 가능해짐
+
+
+## 🦀 Rust Backend (Axum)
+
+Kafka/RedPanda Consumer와 HTTP API 서버 역할을 함께 수행하는 Rust 기반 Backend.
+
+컨테이너가 아니라 호스트에서 `cargo run`으로 직접 실행하며, Docker 서비스 목록에는 포함되지 않는다.
+
+### 1. 실행
+
+```bash
+cd backend
+cargo run
+```
+
+### 2. 확인
+
+```bash
+curl http://localhost:3001/health    # ok 응답
+curl http://localhost:3001/metrics   # Prometheus 형식 metric 노출
+```
+
+### 3. Prometheus 메트릭 노출
+
+`common/metrics.rs`에서 Rust 애플리케이션의 Consumer 및 Broker 상태 metric을 관리하고, `/metrics` 엔드포인트를 통해 Prometheus 형식으로 노출한다.
+
+* `shireguard_consumer_messages_received_total` — Consumer가 브로커에서 수신한 메시지 수
+* `shireguard_consumer_events_parsed_total` — RawEvent 파싱 성공 수
+* `shireguard_consumer_events_failed_total` — RawEvent 파싱 실패 수 (빈 메시지 포함)
+* `shireguard_config_active_broker{broker="kafka|redpanda"}` — 현재 `MESSAGE_BROKER` 설정
+* `shireguard_consumer_broker_connected` — Consumer가 Broker 연결 상태를 주기적으로 관측하여 연결 상태를 `0` 또는 `1`로 표시
+
+불변식:
+
+```text
+received = parsed + failed
+```
+
+#### Broker 연결 상태 및 재연결 테스트
+
+`rdkafka`의 `ClientContext::stats()` callback을 사용하여 Broker 연결 상태를 관측한다.
+
+`librdkafka`가 Broker 재연결을 담당하며, Rust Consumer는 연결 상태 변화를 metric과 로그로 기록한다.
+
+Kafka를 중지했다가 다시 시작하는 동안 Rust 프로세스는 재시작하지 않고 그대로 두어 연결 상태 변화를 확인했다.
+
+```text
+17:22:59 [CONSUMER CREATED]
+17:23:14 [BROKER CONNECTED] 최초 연결
+17:23:42 AllBrokersDown 시작
+17:23:44 [BROKER DISCONNECTED] 연결 끊김 감지
+17:24:14 [BROKER CONNECTED] 재연결 성공
+```
+
+Prometheus metric도 다음과 같이 `1 → 0 → 1`로 변화하는 것을 확인했다.
+
+```text
+1 → 정상 연결
+0 → Broker 연결 끊김
+1 → Broker 재연결
+```
+
+⚠️ Kafka/RedPanda 재시작 시 주의
+- stop/start: 데이터 유지, 안전
+- down/up: 데이터+토픽 전부 삭제 → 토픽 재생성 필요 + Rust 재시작 필수 (안 하면 재구독 실패)
+
+### 참고사항
+
+평소 로그 노이즈 방지를 위해 `[EVENT PARSED]`는 `debug!` 레벨로 기록한다.
+
+`/metrics` 스크레이프 요청은 `request_id_middleware`에서 완료 로그를 제외 처리한다.
+
+(`common/middleware.rs`)
+
+필요 시 `.env`의 `RUST_LOG`를 임시로 조정하여 상세 로그를 확인한다.
+
+
+## 📝 Loki (로그 집계 및 Alert State History 저장소)
+
+Grafana에서 사용하는 오픈소스 로그 집계 시스템으로,
+로그를 수집·저장하고 LogQL을 통해 검색할 수 있음.
+
+Prometheus가 CPU 사용량, 처리량 등의 **metric(숫자)** 을 저장한다면,
+Loki는 다음과 같은 **로그 사건 내용**을 저장하는 용도로 사용한다.
+
+- 애플리케이션 로그
+- 컨테이너 로그
+- 오류 메시지
+- Grafana Alert 상태 변경 기록
+
+### 1. 컨테이너 실행
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.loki.yml up -d loki
+```
+
+### 2. Loki 확인
+```text
+# Ready 상태 확인
+http://localhost:3100/ready
+
+# Loki Metrics 확인
+http://localhost:3100/metrics
+```
+
+### 3. Grafana 연동 및 Alert State History
+Grafana에서 Loki를 Data Source로 사용할 수 있으며,
+Explore에서 LogQL을 이용해 로그를 조회할 수 있음.
+
+`기본 로그 조회:`
+```logql
+{container="grafana"}
+```
+
+또한 Grafana Alert 상태 변경 기록을 Loki에 저장하도록 설정하면
+Grafana Alerting → History에서 Alert 발생 및 복구 이력을 확인할 수 있음
+
+`Grafana Docker Compose 환경변수:`
+```yaml
+  environment:
+      - GF_UNIFIED_ALERTING_STATE_HISTORY_ENABLED=true   # Grafana Alert State History 기능 활성화
+      - GF_UNIFIED_ALERTING_STATE_HISTORY_BACKEND=loki   # Alert State History 저장소로 Loki 사용
+      - GF_UNIFIED_ALERTING_STATE_HISTORY_LOKI_REMOTE_URL=http://loki:3100   # Grafana가 Alert State History를 저장할 Loki 주소
+```
+
+### 4. Grafana와 Loki의 역할 차이
+```
+Prometheus
+→ 숫자 형태의 metric 저장
+→ CPU / Memory / 처리량 / 요청 수 등
+
+Loki
+→ 로그 저장
+→ 오류 메시지 / 이벤트 / Alert State History 등
+
+Grafana
+→ Prometheus metric + Loki log를 시각화
+→ Dashboard / Explore / Alert History 제공
+```

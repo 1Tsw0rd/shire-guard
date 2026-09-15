@@ -42,10 +42,19 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
         # true: 자동 생성 활성화 - 토픽이 없으면 자동으로 생성됨
         # false: 자동 생성 비활성화 - 우리가 직접 만든 토픽만 사용
+
+      # ── JMX Exporter 설정 ──
+      KAFKA_OPTS: "-javaagent:/opt/jmx-exporter/jmx_prometheus_javaagent-1.6.0.jar=9404:/opt/jmx-exporter/kafka.yml"
+        # Kafka 브로커에 JMX Exporter를 붙여서 Prometheus 형식으로 메트릭을 노출
     volumes:
       - ./kafka/data:/var/lib/kafka/data   # 로컬 폴더에 카프카 데이터 저장 (컨테이너 재생성해도 데이터 유지)
+      - ./kafka/jmx-exporter:/opt/jmx-exporter:ro # JMX Exporter 설정 파일을 컨테이너에 읽기 전용으로 마운트
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${KAFKA_PORT} || exit 1"]
+      test:
+         [
+          "CMD-SHELL",
+          'KAFKA_OPTS="" /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${KAFKA_PORT} || exit 1'
+        ]
       interval: 10s
       timeout: 10s
       retries: 5

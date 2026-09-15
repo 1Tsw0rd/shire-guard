@@ -41,11 +41,11 @@ if exists(.file_sha256) {
 
 
 # ── Sinks: 가공된 이벤트를 최종적으로 어디로 보낼지 정의 ──────────
-# 지금은 결과를 눈으로 확인하기 위해 console(터미널 로그)로 출력
-[sinks.console_out]
-type = "console"
-inputs = ["normalize"]     # transform 결과를 받아서 출력
-encoding.codec = "json"    # sink는 encoding을 씀: 내부 이벤트를 다시 바이트/텍스트로 부호화해서 내보내는 단계
+# 결과를 눈으로 확인하기 위해 console(터미널 로그)로 출력
+#[sinks.console_out]
+#type = "console"
+#inputs = ["normalize"]     # transform 결과를 받아서 출력
+#encoding.codec = "json"    # sink는 encoding을 씀: 내부 이벤트를 다시 바이트/텍스트로 부호화해서 내보내는 단계
 
 # kafka 전용
 [sinks.kafka_out]
@@ -62,6 +62,25 @@ inputs = ["normalize"]
 bootstrap_servers = "redpanda:9092"
 topic = "${KAFKA_TOPIC}"
 encoding.codec = "json"
+
+# ── Kafka Producer 성능 튜닝 옵션 ─────────────────────────
+# 2026-09-14 실측: batching 튜닝(linger.ms/batch.size/compression) + acks/idempotence 조합으로
+# 테스트 하였으나 옵션별 처리량 차이 약 2~3%로 유의미하지 않음
+# 현재 규모(15,000건/run, 단일 브로커, RF=1)에서는 기본값 사용
+# (TODO 대규모 지속 부하 테스트 시 재검토)
+#[sinks.kafka_out.librdkafka_options]
+#"linger.ms" = "20"              # default 5ms → 더 오래 모아 더 큰 batch 구성
+#"batch.size" = "2000000"        # default 1MB → producer batch 최대 2MB
+#"compression.type" = "lz4"      # default none → Kafka batch 압축 → 네트워크 전송량 감소
+#"enable.idempotence" = "true"   # default false → 재시도 시 중복 전송 방지(acks와 함께 사용 불가)
+#"acks" = "1"  # default -1/all
+
+#[sinks.redpanda_out.librdkafka_options]
+#"linger.ms" = "20"
+#"batch.size" = "2000000"
+#"compression.type" = "lz4"
+#"enable.idempotence" = "true"
+#"acks" = "1"
 
 # opensearch 전용
 [sinks.opensearch_out]
@@ -82,3 +101,57 @@ table = "security_events"
 auth.strategy = "basic"
 auth.user = "${CLICKHOUSE_USER}"
 auth.password = "${CLICKHOUSE_PASSWORD}"
+
+# ── 내부 메트릭 소스: Vector 자신의 처리 통계(수신/발신 이벤트 수 등)를 생성 ──
+[sources.internal_metrics]
+type = "internal_metrics"
+
+# ── Prometheus가 스크래핑할 수 있도록 내부 메트릭을 HTTP(address 값)로 노출 ──
+[sinks.prometheus_out]
+type = "prometheus_exporter"
+inputs = ["internal_metrics"]
+address = "0.0.0.0:9598"
+
+# ── Sink Buffer 정책 및 테스트 ──────────────────────────────────────────────
+# Opensearch/Clickhouse Sink 장애 격리용 disk buffer
+# Sink 장애 또는 서비스 종료 된 경우 vector로 유입되는 이벤트가 각 Sink 버퍼에 쌓일 수 있음
+# Sink 버퍼 하나가 가득 차고, when_full=block 설정(Default block)인 경우
+# normalize(fan-out 지점) 전체를 block시켜서 정상적인 Sink들의 흐름까지 Block 함
+# (backpressure가 upstream으로 전파(뒤에서 막히면 앞까지 느려짐)되어 Vector 동작이 멈춘거나 마찬가지인 상태가 되는 것을 경험)
+#
+# 멈추는 현상을 방지하기 위해 장애가 있는 상황을 고려하여
+# Opensearch/Clickhouse는 disk buffer를 사용하여 가득 차기 전에 담당자가 Vector가 먹통되기 전까지의 조치할 수 있는 시간을 벌이는 장치로 해당 설정함
+# Disk Buffer가 가득차기 전 조치할 경우 데이터 유실을 방지할 수 있는 효과를 기대하고
+# Disk Buffer가 가득찰 경우 다른 정상 Sink들을 방해하지 않도록 새로 유입되는 이벤트들은 when_full=drop_newest 설정으로 버리도록 조치함
+#
+# memory buffer는 이벤트를 buffer에 쌓아두지 않고 즉시 producer(librdkafka)로 넘김
+# producer가 브로커 전송에 실패하면 그 즉시 discard되며, 이때 max_events는 사실상
+# "buffer 점유 상한"이 아니라 "실패 판정 이전에 producer 큐에 쌓일 수 있는 최대치" 역할만 함
+# (실측: buffer_size_events가 실행 내내 0을 유지하고, discarded_events_total만 증가함)
+# 아래 설정에서 max_events만큼 이벤트가 찰 경우 새로 유입되는 이벤트들은 when_full=drop_newest 설정으로 버림
+#
+# when_full=drop_newest 설정으로 정상 Sink들은 계속 정상 운영이 가능하고,
+# 문제가 있는 Sink는 담당자가 조치하여 이벤트 유실을 최소화하는 전략을 연습함
+#
+# 이 테스트 설정은 Kafka/RedPanda의 동작을 방해하지 않게 하는 위한 목적을 가지며
+# 테스트 종료 시, 실제 사용하는 Kafka 또는 RedPanda 둘 중 하나만 활성화하고 나머지는 주석처리 예정
+
+[sinks.clickhouse_out.buffer]
+type = "disk"
+max_size = 1073741824     # 실제 디스크 사용량이 아니라 해당 buffer가 사용할 수 있는 최대 크기: 1GiB
+when_full = "drop_newest" # max_size 초과할 경우 새로 들어오는 event 들은 버림, disk 타입 버퍼는 쓰이지 않은 이벤트를 버퍼에 보관되어 Sink 복구 후 처리될 기회를 제공
+
+[sinks.opensearch_out.buffer]
+type = "disk"
+max_size = 1073741824
+when_full = "drop_newest"
+
+[sinks.kafka_out.buffer]
+type = "memory"
+max_events = 10000   # 1만개 event가 쌓일 경우
+when_full = "drop_newest" # 새로  새로 들어오는 event들은 버림, memory 타입 버퍼는 쓰이지 않은 이벤트는 바로바로 버림
+
+[sinks.redpanda_out.buffer]
+type = "memory"
+max_events = 10000
+when_full = "drop_newest"
