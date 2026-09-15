@@ -1,0 +1,46 @@
+# Loki 인증 사용 여부
+# 단일 Docker 환경에서 내부 통신만 사용하므로 비활성화
+auth_enabled: false
+
+server:
+  # Loki HTTP API가 컨테이너 내부에서 수신하는 포트
+  http_listen_port: 3100
+
+common:
+  ring:
+    # 단일 Loki 인스턴스에서 사용할 주소
+    instance_addr: 127.0.0.1
+    kvstore:
+      # 분산 KV 저장소 대신 메모리를 사용
+      store: inmemory
+  # 데이터 복제본 수 - 단일 인스턴스이므로 1
+  replication_factor: 1
+  # Loki 데이터 저장 기본 경로
+  path_prefix: /loki
+
+schema_config:
+  configs:
+    # 이 날짜부터 아래 저장 스키마를 적용
+    - from: 2026-01-01
+      # Loki 로그 검색을 위한 인덱스를 TSDB(Time Series Database, 시간 순서에 따라 데이터를 관리하는 방식)로 저장
+      store: tsdb
+      # 별도의 외부 객체 저장소 대신 로컬 파일시스템 사용
+      object_store: filesystem
+      # Loki 저장 스키마 버전
+      schema: v13
+      index:
+        # 인덱스 파일 이름 접두사
+        prefix: index_
+        # 인덱스를 24시간 단위로 생성
+        period: 24h
+
+storage_config:
+  filesystem:
+    # 로그 chunk 파일을 저장할 실제 디렉터리
+    directory: /loki/chunks
+
+limits_config:
+  # 장시간 범위의 쿼리를 24시간 단위로 나누어 처리
+  split_queries_by_interval: 24h
+  # 동시에 처리할 수 있는 query 수
+  max_query_parallelism: 32

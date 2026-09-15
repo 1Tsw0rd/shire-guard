@@ -96,7 +96,17 @@
                                ▼
                     ┌──────────────────────┐
                     │       Grafana        │
-                    │      시각화 · 알림     │
+                    │   시각화 · 알림 · 로그  │
+                    │   조회 · Alert History│
+                    └─────────┬────────────┘
+                              │
+                       LogQL / State History
+                              │
+                              ▼
+                    ┌──────────────────────┐
+                    │         Loki         │
+                    │    로그 · Alert State │
+                    │       History 저장    │
                     └──────────────────────┘
 
 ## 보고서 생성 - hwpx
@@ -750,3 +760,67 @@ Prometheus metric도 다음과 같이 `1 → 0 → 1`로 변화하는 것을 확
 (`common/middleware.rs`)
 
 필요 시 `.env`의 `RUST_LOG`를 임시로 조정하여 상세 로그를 확인한다.
+
+
+## 📝 Loki (로그 집계 및 Alert State History 저장소)
+
+Grafana에서 사용하는 오픈소스 로그 집계 시스템으로,
+로그를 수집·저장하고 LogQL을 통해 검색할 수 있음.
+
+Prometheus가 CPU 사용량, 처리량 등의 **metric(숫자)** 을 저장한다면,
+Loki는 다음과 같은 **로그 사건 내용**을 저장하는 용도로 사용한다.
+
+- 애플리케이션 로그
+- 컨테이너 로그
+- 오류 메시지
+- Grafana Alert 상태 변경 기록
+
+### 1. 컨테이너 실행
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.loki.yml up -d loki
+```
+
+### 2. Loki 확인
+```text
+# Ready 상태 확인
+http://localhost:3100/ready
+
+# Loki Metrics 확인
+http://localhost:3100/metrics
+```
+
+### 3. Grafana 연동 및 Alert State History
+Grafana에서 Loki를 Data Source로 사용할 수 있으며,
+Explore에서 LogQL을 이용해 로그를 조회할 수 있음.
+
+`기본 로그 조회:`
+```logql
+{container="grafana"}
+```
+
+또한 Grafana Alert 상태 변경 기록을 Loki에 저장하도록 설정하면
+Grafana Alerting → History에서 Alert 발생 및 복구 이력을 확인할 수 있음
+
+`Grafana Docker Compose 환경변수:`
+```yaml
+  environment:
+      - GF_UNIFIED_ALERTING_STATE_HISTORY_ENABLED=true   # Grafana Alert State History 기능 활성화
+      - GF_UNIFIED_ALERTING_STATE_HISTORY_BACKEND=loki   # Alert State History 저장소로 Loki 사용
+      - GF_UNIFIED_ALERTING_STATE_HISTORY_LOKI_REMOTE_URL=http://loki:3100   # Grafana가 Alert State History를 저장할 Loki 주소
+```
+
+### 4. Grafana와 Loki의 역할 차이
+```
+Prometheus
+→ 숫자 형태의 metric 저장
+→ CPU / Memory / 처리량 / 요청 수 등
+
+Loki
+→ 로그 저장
+→ 오류 메시지 / 이벤트 / Alert State History 등
+
+Grafana
+→ Prometheus metric + Loki log를 시각화
+→ Dashboard / Explore / Alert History 제공
+```

@@ -4,12 +4,16 @@ services:
     image: grafana/grafana:latest
     container_name: grafana
     restart: unless-stopped
+    environment:
+      - GF_UNIFIED_ALERTING_STATE_HISTORY_ENABLED=true   # Grafana Alert State History 기능 활성화
+      - GF_UNIFIED_ALERTING_STATE_HISTORY_BACKEND=loki   # Alert State History 저장소로 Loki 사용
+      - GF_UNIFIED_ALERTING_STATE_HISTORY_LOKI_REMOTE_URL=http://loki:3100   # Grafana가 Alert State History를 저장할 Loki 주소
     ports:
       - "${GRAFANA_PORT:?GRAFANA_PORT가 설정되지 않았습니다}:3000" # Grafana는 컨테이너 내부 리스닝 포트를 환경변수로 바꿀 수 없어 3000 고정
     volumes:
       - ./grafana/data:/var/lib/grafana
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O - http://localhost:${GRAFANA_PORT}/api/health || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O - http://localhost:3000/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
