@@ -115,7 +115,7 @@ mod tests {
         // 실제 조회 결과 출력
         println!(
             "DNS lookup result for example.com: {:?}",
-            &result.resolved_ips
+            result.resolved_ips
         );
         for ip in &result.resolved_ips {
             println!("  - {ip}");
