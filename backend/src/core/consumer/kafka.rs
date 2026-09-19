@@ -39,6 +39,7 @@ use crate::common::error::AppError;
 use crate::common::metrics::Metrics;
 use crate::config::BrokerConfig;
 use crate::core::consumer::event::RawEvent;
+use crate::core::enrichment::service::EnrichmentService;
 
 // librdkafka가 statistics.interval.ms 주기로 통계를 콜백해줄 때 받는 커스텀 컨텍스트
 pub struct KafkaConsumerContext {
@@ -116,6 +117,7 @@ pub async fn run(
     consumer: StreamConsumer<KafkaConsumerContext>,
     topic: String,
     metrics: Arc<Metrics>,
+    enrichment: Arc<EnrichmentService>,
 ) {
     // Topic 구독
     if let Err(e) = consumer.subscribe(&[&topic]) {
@@ -143,6 +145,14 @@ pub async fn run(
                     Ok(event) => {
                         metrics.consumer_events_parsed.inc();
                         tracing::debug!(?event, "[EVENT PARSED] 이벤트 수신 및 파싱 성공");
+
+                        // TODO Enrichment 실행 (Playbook Engine이 아직 없으므로 결과는 로그로만 확인)
+                        let evidence = enrichment.enrich_event(event).await;
+                        tracing::info!(
+                            event_id = %evidence.event.event_id,
+                            "[ENRICHMENT COMPLETE] 조사 완료"
+                        );
+                        tracing::trace!(?evidence, "[EVIDENCE] {:?}", evidence);
                     }
                     Err(e) => {
                         metrics.consumer_events_failed.inc();

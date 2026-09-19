@@ -573,13 +573,46 @@ docker exec -it dragonfly redis-cli -a ${DRAGONFLY_PASSWORD}
 
 ### 3. 기본 명령어
 ```bash
+KEYS *                   # 현재 DB에 있는 key 목록 확인
 SET key value EX 60      # key에 value 저장, 60초 후 만료
 GET key                  # key 값 조회
 DEL key                  # key 삭제
 TTL key                  # 남은 만료 시간(초) 확인
 PING                     # 연결 확인 (PONG 응답)
+FLUSHDB                  # 현재 DB 전체 삭제
+
+SET key value NX         # key가 없을 때만 저장 (이미 존재하면 저장하지 않음), NX(Not eXists)
+SET key value NX EX 10   # key가 없을 때만 저장하고 10초 후 자동 만료
+                         # 분산 락 구현에 활용 가능
 ```
 
+### 참고사항
+
+```text
+분산락 구현 예시
+
+1. Redis GET
+   enrichment:abuseipdb:1.2.3.4
+   → 값 없음
+
+2. A가
+   SET enrichment:lock:abuseipdb:1.2.3.4 UUID-A NX EX 10
+   → 성공 ✅
+   → A가 작업권 획득
+
+3. B가 같은 lock key에
+   SET ... UUID-B NX EX 10
+   → 실패 ❌
+   → 이미 A가 lock을 가지고 있음
+
+4. A가 AbuseIPDB 호출
+   → 결과를
+   SET enrichment:abuseipdb:1.2.3.4 ... EX 86400
+
+5. A가 lock 해제
+   → lock의 owner가 UUID-A인지 확인한 후 삭제
+   → enrichment:lock:abuseipdb:1.2.3.4
+```
 
 ## 📈 Grafana (모니터링 대시보드)
 
