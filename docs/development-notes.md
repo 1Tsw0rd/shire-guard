@@ -573,13 +573,47 @@ docker exec -it dragonfly redis-cli -a ${DRAGONFLY_PASSWORD}
 
 ### 3. 기본 명령어
 ```bash
+KEYS *                   # 현재 DB에 있는 key 목록 확인
 SET key value EX 60      # key에 value 저장, 60초 후 만료
 GET key                  # key 값 조회
 DEL key                  # key 삭제
 TTL key                  # 남은 만료 시간(초) 확인
 PING                     # 연결 확인 (PONG 응답)
+FLUSHDB                  # 현재 DB 전체 삭제
+DBSIZE                   # 현재 DB 전체 key 개수 반환  
+
+SET key value NX         # key가 없을 때만 저장 (이미 존재하면 저장하지 않음), NX(Not eXists)
+SET key value NX EX 10   # key가 없을 때만 저장하고 10초 후 자동 만료
+                         # 분산 락 구현에 활용 가능
 ```
 
+### 참고사항
+
+```text
+분산락 구현 예시
+
+1. Redis GET
+   enrichment:abuseipdb:1.2.3.4
+   → 값 없음
+
+2. A가
+   SET enrichment:lock:abuseipdb:1.2.3.4 UUID-A NX EX 10
+   → 성공 ✅
+   → A가 작업권 획득
+
+3. B가 같은 lock key에
+   SET ... UUID-B NX EX 10
+   → 실패 ❌
+   → 이미 A가 lock을 가지고 있음
+
+4. A가 AbuseIPDB 호출
+   → 결과를
+   SET enrichment:abuseipdb:1.2.3.4 ... EX 86400
+
+5. A가 lock 해제
+   → lock의 owner가 UUID-A인지 확인한 후 삭제
+   → enrichment:lock:abuseipdb:1.2.3.4
+```
 
 ## 📈 Grafana (모니터링 대시보드)
 
@@ -654,6 +688,13 @@ up
 ```
 등록된 모든 대상의 생존 여부(1=정상, 0=응답 없음) 한눈에 확인
 
+### 5. Redis / Dragonfly 캐시 메트릭
+Redis와 Dragonfly는 Prometheus 메트릭을 제공하는 방식이 다르다.
+
+Redis: 별도의 redis_exporter를 사용해 Redis의 상태와 key 수 등의 메트릭을 Prometheus가 수집하도록 구성
+Dragonfly: 자체 /metrics endpoint를 제공하므로 별도의 exporter 없이 Prometheus가 직접 수집 가능
+
+Shire Guard에서는 캐시 key 개수를 exporter에 의존하지 않고, 애플리케이션에서 DBSIZE 명령어를 사용해 직접 확인하는 방식으로 구현함
 
 ## 📊 cAdvisor (컨테이너 리소스 모니터링)
 

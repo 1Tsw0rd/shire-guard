@@ -20,6 +20,12 @@ pub enum MessageBroker {
     RedPanda,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheBackend {
+    Redis,
+    Dragonfly,
+}
+
 #[derive(Debug, Clone)]
 pub struct BrokerConfig {
     pub broker: MessageBroker,
@@ -29,10 +35,23 @@ pub struct BrokerConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct CacheConfig {
+    pub backend: CacheBackend,
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub database_url: String,
     pub rust_log: String,
     pub broker: BrokerConfig,
+    pub cache: CacheConfig,
+
+    // Enrichment
+    pub abuseipdb_api_key: String,
+    pub virustotal_api_key: String,
+    pub dns_resolver_host: String,
+    pub dns_resolver_port: u16,
 }
 
 impl AppConfig {
@@ -46,6 +65,30 @@ impl AppConfig {
 
             // Message Broker (Kafka / RedPanda)
             broker: BrokerConfig::from_env()?,
+
+            // Cache Backend (Redis / Dragonfly)
+            cache: CacheConfig::from_env()?,
+
+            // Enrichment
+            abuseipdb_api_key: std::env::var("ABUSEIPDB_API_KEY").map_err(|_| {
+                AppError::Internal("ABUSEIPDB_API_KEY 환경변수가 설정되지 않았습니다.".into())
+            })?,
+
+            virustotal_api_key: std::env::var("VIRUSTOTAL_API_KEY").map_err(|_| {
+                AppError::Internal("VIRUSTOTAL_API_KEY 환경변수가 설정되지 않았습니다.".into())
+            })?,
+
+            dns_resolver_host: std::env::var("DNS_RESOLVER_HOST").map_err(|_| {
+                AppError::Internal("DNS_RESOLVER_HOST 환경변수가 설정되지 않았습니다.".into())
+            })?,
+            dns_resolver_port: std::env::var("DNS_RESOLVER_PORT")
+                .map_err(|_| {
+                    AppError::Internal("DNS_RESOLVER_PORT 환경변수가 설정되지 않았습니다.".into())
+                })?
+                .parse::<u16>()
+                .map_err(|_| {
+                    AppError::Internal("DNS_RESOLVER_PORT는 올바른 정수여야 합니다.".into())
+                })?,
         })
     }
 }
@@ -135,6 +178,78 @@ impl BrokerConfig {
     }
 }
 
+impl CacheConfig {
+    pub fn from_env() -> Result<Self, AppError> {
+        let backend_type = std::env::var("CACHE_BACKEND").map_err(|_| {
+            AppError::Internal("CACHE_BACKEND 환경변수가 설정되지 않았습니다.".into())
+        })?;
+
+        let redis_password = std::env::var("REDIS_PASSWORD").ok();
+        let redis_port = std::env::var("REDIS_PORT").ok();
+        let dragonfly_password = std::env::var("DRAGONFLY_PASSWORD").ok();
+        let dragonfly_port = std::env::var("DRAGONFLY_PORT").ok();
+
+        let (backend, url) = Self::resolve(
+            &backend_type,
+            redis_password.as_deref(),
+            redis_port.as_deref(),
+            dragonfly_password.as_deref(),
+            dragonfly_port.as_deref(),
+        )?;
+
+        Ok(Self { backend, url })
+    }
+
+    fn resolve(
+        backend_type: &str,
+        redis_password: Option<&str>,
+        redis_port: Option<&str>,
+        dragonfly_password: Option<&str>,
+        dragonfly_port: Option<&str>,
+    ) -> Result<(CacheBackend, String), AppError> {
+        match backend_type {
+            "redis" => {
+                let password = redis_password.ok_or_else(|| {
+                    AppError::Internal(
+                        "CACHE_BACKEND=redis인데 REDIS_PASSWORD 환경변수가 설정되지 않았습니다."
+                            .into(),
+                    )
+                })?;
+                let port = redis_port.ok_or_else(|| {
+                    AppError::Internal(
+                        "CACHE_BACKEND=redis인데 REDIS_PORT 환경변수가 설정되지 않았습니다.".into(),
+                    )
+                })?;
+                Ok((
+                    CacheBackend::Redis,
+                    format!("redis://:{password}@localhost:{port}"),
+                ))
+            }
+            "dragonfly" => {
+                let password = dragonfly_password.ok_or_else(|| {
+                    AppError::Internal(
+                        "CACHE_BACKEND=dragonfly인데 DRAGONFLY_PASSWORD 환경변수가 설정되지 않았습니다."
+                            .into(),
+                    )
+                })?;
+                let port = dragonfly_port.ok_or_else(|| {
+                    AppError::Internal(
+                        "CACHE_BACKEND=dragonfly인데 DRAGONFLY_PORT 환경변수가 설정되지 않았습니다."
+                            .into(),
+                    )
+                })?;
+                Ok((
+                    CacheBackend::Dragonfly,
+                    format!("redis://:{password}@localhost:{port}"),
+                ))
+            }
+            other => Err(AppError::Internal(format!(
+                "지원하지 않는 CACHE_BACKEND입니다: {other}"
+            ))),
+        }
+    }
+}
+
 // cargo test --lib config
 #[cfg(test)]
 mod tests {
@@ -199,5 +314,53 @@ mod tests {
         let result = BrokerConfig::resolve("redpanda", None, None, Some("localhost"), None);
 
         assert!(result.is_err());
+    }
+
+    // 시나리오 8: Redis를 선택하면 Redis와 redis://:pw@localhost:6379를 반환
+    #[test]
+    fn resolve_redis_backend() {
+        let (backend, url) =
+            CacheConfig::resolve("redis", Some("pw"), Some("6379"), None, None).unwrap();
+        assert_eq!(backend, CacheBackend::Redis);
+        assert_eq!(url, "redis://:pw@localhost:6379");
+    }
+
+    // 시나리오 9: Dragonfly를 선택하면 Dragonfly와 redis://:pw@localhost:6380을 반환
+    #[test]
+    fn resolve_dragonfly_backend() {
+        let (backend, url) =
+            CacheConfig::resolve("dragonfly", None, None, Some("pw"), Some("6380")).unwrap();
+        assert_eq!(backend, CacheBackend::Dragonfly);
+        assert_eq!(url, "redis://:pw@localhost:6380");
+    }
+
+    // 시나리오 10: 지원하지 않는 캐시 백엔드를 지정하면 에러를 반환
+    #[test]
+    fn resolve_unknown_backend_fails() {
+        assert!(CacheConfig::resolve("unknown", None, None, None, None).is_err());
+    }
+
+    // 시나리오 11: Redis인데 password가 없으면 에러를 반환
+    #[test]
+    fn resolve_redis_missing_password_fails() {
+        assert!(CacheConfig::resolve("redis", None, Some("6379"), None, None).is_err());
+    }
+
+    // 시나리오 12: Redis인데 port가 없으면 에러를 반환
+    #[test]
+    fn resolve_redis_missing_port_fails() {
+        assert!(CacheConfig::resolve("redis", Some("pw"), None, None, None).is_err());
+    }
+
+    // 시나리오 13: Dragonfly인데 password가 없으면 에러를 반환
+    #[test]
+    fn resolve_dragonfly_missing_password_fails() {
+        assert!(CacheConfig::resolve("dragonfly", None, None, None, Some("6380")).is_err());
+    }
+
+    // 시나리오 14: Dragonfly인데 port가 없으면 에러를 반환
+    #[test]
+    fn resolve_dragonfly_missing_port_fails() {
+        assert!(CacheConfig::resolve("dragonfly", None, None, Some("pw"), None).is_err());
     }
 }

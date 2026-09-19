@@ -6,12 +6,17 @@ use axum::extract::State; // Axum 익스트랙터: .with_state(state)로 넘긴 
 use axum::routing::get;
 use sqlx::postgres::PgPoolOptions;
 
+use backend::common::clients::redis::RedisClient;
 use backend::common::error::AppError;
 use backend::common::fallback::not_found;
 use backend::common::metrics::Metrics;
 use backend::common::middleware::request_id_middleware;
 use backend::config::AppConfig;
 use backend::core::consumer::kafka;
+use backend::core::enrichment::providers::abuseipdb::AbuseIpDbProvider;
+use backend::core::enrichment::providers::dns::DnsProvider;
+use backend::core::enrichment::providers::virustotal::VirusTotalProvider;
+use backend::core::enrichment::service::EnrichmentService;
 use backend::state::AppState;
 
 #[tokio::main]
@@ -42,17 +47,70 @@ async fn main() {
         .expect("PostgreSQL 연결 실패");
     tracing::info!("[DB CONNECTED] PostgreSQL 서버 연결 성공");
 
+    // Redis/Dragonfly 연결 (Enrichment 캐시/분산 락 용도)
+    tracing::info!(
+        "[CACHE CONNECTING] {:?} 서버에 연결 시도합니다...",
+        config.cache.backend
+    );
+    let redis_raw =
+        redis::Client::open(config.cache.url.as_str()).expect("Redis/Dragonfly Client 생성 실패");
+    let redis = RedisClient::new(redis_raw)
+        .await
+        .expect("Redis/Dragonfly 연결 실패");
+    tracing::info!("[CACHE CONNECTED] {:?} 연결 성공", config.cache.backend);
+
+    // Redis 연결 직후, Metrics용으로 clone
+    let redis_for_metrics = redis.clone();
+
+    // Enrichment Provider 3개 생성
+    let dns_provider = DnsProvider::new(&config.dns_resolver_host, config.dns_resolver_port)
+        .expect("DNS Provider 초기화 실패");
+    let abuseipdb_provider = AbuseIpDbProvider::new(config.abuseipdb_api_key.clone());
+    let virustotal_provider = VirusTotalProvider::new(config.virustotal_api_key.clone());
+
+    let enrichment = Arc::new(EnrichmentService::new(
+        redis,
+        dns_provider,
+        abuseipdb_provider,
+        virustotal_provider,
+    ));
+
     // Prometheus metrics 초기화 (config.broker 기준으로 active_broker 게이지 세팅)
-    let metrics = Arc::new(Metrics::new(&config.broker).expect("metrics 초기화 실패"));
+    let metrics =
+        Arc::new(Metrics::new(&config.broker, &config.cache).expect("metrics 초기화 실패"));
 
     // Kafka/RedPanda Consumer를 백그라운드 태스크로 실행 (HTTP 서버와 별개로 계속 동작)
     let consumer =
         kafka::build_consumer(&config.broker, metrics.clone()).expect("Kafka Consumer 생성 실패");
     let topic = config.broker.topic.clone();
-    tokio::spawn(kafka::run(consumer, topic, metrics.clone()));
+    tokio::spawn(kafka::run(
+        consumer,
+        topic,
+        metrics.clone(),
+        enrichment.clone(),
+    ));
+
+    // Redis/Dragonfly Key 개수 반환 매트릭(15초 주기)
+    {
+        let metrics = metrics.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                interval.tick().await;
+                match redis_for_metrics.dbsize().await {
+                    Ok(count) => metrics.cache_key_count.set(count),
+                    Err(err) => tracing::warn!(error = ?err, "캐시 키 개수 조회 실패"),
+                }
+            }
+        });
+    }
 
     // Axum HTTP 서버 구성 및 실행
-    let state = Arc::new(AppState { postgres, metrics });
+    let state = Arc::new(AppState {
+        postgres,
+        metrics,
+        enrichment,
+    });
 
     let app = Router::new()
         .route("/health", get(health_check))

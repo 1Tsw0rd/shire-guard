@@ -1,14 +1,23 @@
- // ./loadgen.exe file_download 7100000 15000 1000 --reps 5 --cooldown 10
+// ./loadgen.exe file_download 7100000 15000 1000 --reps 5 --cooldown 10 --case malicious
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
+
+// 테스트 케이스: 실제 AbuseIPDB/VirusTotal 조회로 확인해둔 고정 IOC를 사용
+// safe:      AbuseIPDB score 0 / VirusTotal 대부분 undetected(malicious 0)
+// malicious: AbuseIPDB score 100 / VirusTotal EICAR(malicious 다수 탐지)
+#[derive(ValueEnum, Clone, Debug)]
+enum Case {
+    Safe,
+    Malicious,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -20,23 +29,22 @@ use tokio::sync::Semaphore;
   login_failure  로그인 실패 이벤트
   dns_beacon     DNS beacon 이벤트
 
+케이스:
+  --case safe       AbuseIPDB score 0, VirusTotal 대부분 undetected인 IOC 사용
+  --case malicious  AbuseIPDB score 100, VirusTotal EICAR(악성 다수 탐지)인 IOC 사용
+  기본값은 malicious
+
 반복 테스트:
   --reps 5로 실행하면 같은 프로세스와 HTTP Client를 유지한 채
   Run을 5회 반복합니다. 각 Run의 시작 event_id는 count만큼 증가합니다.
   --cooldown은 Run 사이 대기 시간입니다.
 
 예시:
-  # 15,000건을 동시 1,000개 요청으로 1회 실행
-  loadgen.exe file_download 7100000 15000 1000
+  # 위험 케이스 IOC로 15,000건을 동시 1,000개 요청으로 1회 실행
+  loadgen.exe file_download 7100000 15000 1000 --case malicious
 
-  # 15,000건 × 5회, 동시 1,000개, Run 사이 10초 대기
-  loadgen.exe file_download 7100000 15000 1000 --reps 5 --cooldown 10
-
-  # DNS beacon 100,000건을 동시 200개로 전송
-  loadgen.exe dns_beacon 1 100000 200
-
-  # 동시성 1로 사실상 순차 처리
-  loadgen.exe login_failure 1 100 1
+  # 안전 케이스 IOC로 login_failure 100건 순차 전송
+  loadgen.exe login_failure 1 100 1 --case safe
 "
 )]
 struct Args {
@@ -64,28 +72,47 @@ struct Args {
     /// 반복 사이 대기 시간(초)
     #[arg(long, default_value_t = 10)]
     cooldown: u64,
+
+    /// 테스트 케이스: safe(정상) 또는 malicious(악성)
+    #[arg(long, value_enum, default_value_t = Case::Malicious)]
+    case: Case,
 }
 
-fn build_payload(event_type: &str, id: u64) -> Value {
+fn build_payload(event_type: &str, id: u64, case: &Case) -> Value {
     let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let event_id = format!("evt-{id}");
 
+    // AbuseIPDB로 실제 확인해둔 고정 IP (score 0 vs score 100)
+    let source_ip = match case {
+        Case::Safe => "118.25.6.39",
+        Case::Malicious => "144.48.243.18",
+    };
+
     match event_type {
-        "file_download" => json!({
-            "event_id": event_id,
-            "event_type": "file_download",
-            "timestamp": timestamp,
-            "source_ip": "185.220.101.45",
-            "destination_domain": "cdn-update-service.net",
-            "file_name": "invoice_2026.exe",
-            "file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "file_size_bytes": 245760
-        }),
+        "file_download" => {
+            // VirusTotal로 실제 확인해둔 고정 해시 (대부분 undetected vs EICAR 악성 다수 탐지)
+            let file_sha256 = match case {
+                Case::Safe => "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                Case::Malicious => "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+            };
+            // destination_domain은 두 케이스 다 실제 존재하지 않는 도메인이라
+            // DNS 조회는 항상 NotFound로 응답함(의도적 — "미확인 도메인" 케이스 검증용)
+            json!({
+                "event_id": event_id,
+                "event_type": "file_download",
+                "timestamp": timestamp,
+                "source_ip": source_ip,
+                "destination_domain": "cdn-update-service.net",
+                "file_name": "invoice_2026.exe",
+                "file_sha256": file_sha256,
+                "file_size_bytes": 245760
+            })
+        }
         "login_failure" => json!({
             "event_id": event_id,
             "event_type": "login_failure",
             "timestamp": timestamp,
-            "source_ip": "185.220.101.45",
+            "source_ip": source_ip,
             "username": "admin",
             "attempt_count": 12,
             "target_service": "ssh"
@@ -94,8 +121,8 @@ fn build_payload(event_type: &str, id: u64) -> Value {
             "event_id": event_id,
             "event_type": "dns_beacon",
             "timestamp": timestamp,
-            "source_ip": "198.51.100.77",
-            "destination_domain": "telemetry-sync.info",
+            "source_ip": source_ip,
+            "destination_domain": "nexon.com",
             "hostname": "WKS-1183",
             "request_interval_seconds": 60
         }),
@@ -112,8 +139,8 @@ async fn run_once(
     let end = start + args.count - 1;
 
     println!(
-        "── Run: evt-{} ~ evt-{} (총 {}건, 동시 {}) ──",
-        start, end, args.count, args.parallel
+        "── Run: evt-{} ~ evt-{} (총 {}건, 동시 {}, 케이스 {:?}) ──",
+        start, end, args.count, args.parallel, args.case
     );
 
     let success = Arc::new(AtomicUsize::new(0));
@@ -127,13 +154,14 @@ async fn run_once(
         let semaphore = semaphore.clone();
         let event_type = args.event_type.clone();
         let url = args.url.clone();
+        let case = args.case.clone();
         let success = success.clone();
         let fail = fail.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
 
-            let payload = build_payload(&event_type, id);
+            let payload = build_payload(&event_type, id, &case);
 
             match client.post(&url).json(&payload).send().await {
                 Ok(resp) if resp.status().is_success() => {
@@ -176,8 +204,6 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // 중요:
-    // Client와 connection pool을 전체 반복 테스트 동안 하나만 유지한다.
     let client = Client::new();
     let semaphore = Arc::new(Semaphore::new(args.parallel));
 
