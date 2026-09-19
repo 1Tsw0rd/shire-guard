@@ -16,7 +16,7 @@
 use prometheus::{Encoder, GaugeVec, IntCounter, IntGauge, Opts, Registry, TextEncoder};
 
 use crate::common::error::AppError;
-use crate::config::{BrokerConfig, MessageBroker};
+use crate::config::{BrokerConfig, CacheBackend, CacheConfig, MessageBroker};
 
 pub struct Metrics {
     registry: Registry,
@@ -24,10 +24,11 @@ pub struct Metrics {
     pub consumer_events_parsed: IntCounter,
     pub consumer_events_failed: IntCounter,
     pub consumer_broker_connected: IntGauge,
+    pub cache_key_count: IntGauge,
 }
 
 impl Metrics {
-    pub fn new(broker_config: &BrokerConfig) -> Result<Self, AppError> {
+    pub fn new(broker_config: &BrokerConfig, cache_config: &CacheConfig) -> Result<Self, AppError> {
         // 빈 Registry 생성: 아래에서 만드는 metric들을 여기 등록해야 나중에 /metrics에서 노출됨
         let registry = Registry::new();
 
@@ -89,9 +90,33 @@ impl Metrics {
             AppError::Internal(format!("shireguard_config_active_broker 생성 실패: {e}"))
         })?;
 
+        // (Redis/Dragonfly) 캐시 키 개수 게이지
+        let cache_key_count = IntGauge::new(
+            "shireguard_cache_key_count",
+            "Enrichment 캐시(Redis/Dragonfly)에 저장된 키 개수",
+        )
+        .map_err(|e| AppError::Internal(format!("shireguard_cache_key_count 생성 실패: {e}")))?;
+
+        // (Redis/Dragonfly) 현재 docker/.env 안에 CACHE_BACKEND 설정값 게이지
+        let config_active_cache = GaugeVec::new(
+            Opts::new(
+                "shireguard_config_active_cache",
+                "현재 CACHE_BACKEND 설정값 (해당 cache label만 1로 노출)",
+            ),
+            &["cache"],
+        )
+        .map_err(|e| {
+            AppError::Internal(format!("shireguard_config_active_cache 생성 실패: {e}"))
+        })?;
+
         let broker_label = match broker_config.broker {
             MessageBroker::Kafka => "kafka",
             MessageBroker::RedPanda => "redpanda",
+        };
+
+        let cache_label = match cache_config.backend {
+            CacheBackend::Redis => "redis",
+            CacheBackend::Dragonfly => "dragonfly",
         };
 
         // 하나를 찾거나 새로 만들고, set(1.0)이 그 값을 1로 세팅함
@@ -101,6 +126,10 @@ impl Metrics {
         // 예: shireguard_config_active_broker{broker="redpanda"} 는 하나의 시리즈
         config_active_broker
             .with_label_values(&[broker_label])
+            .set(1.0);
+
+        config_active_cache
+            .with_label_values(&[cache_label])
             .set(1.0);
 
         // clone(): Metrics 구조체에서도 이 Counter를 계속 사용해야 하므로 같은 metric을 가리키는 핸들을 하나 더 만든다.
@@ -126,6 +155,12 @@ impl Metrics {
         registry
             .register(Box::new(consumer_broker_connected.clone()))
             .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(cache_key_count.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(config_active_cache))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
 
         Ok(Self {
             registry,
@@ -133,6 +168,7 @@ impl Metrics {
             consumer_events_parsed,
             consumer_events_failed,
             consumer_broker_connected,
+            cache_key_count,
         })
     }
 

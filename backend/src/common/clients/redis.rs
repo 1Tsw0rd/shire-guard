@@ -97,4 +97,15 @@ impl RedisClient {
 
         Ok(())
     }
+
+    // Enrichment 캐시에 저장된 키 개수 조회(Grafana 대시보드 표시용)
+    pub async fn dbsize(&self) -> Result<i64, AppError> {
+        let mut connection = self.connection.clone();
+
+        // DBSIZE는 전체 Key 개수 반환
+        redis::cmd("DBSIZE")
+            .query_async(&mut connection)
+            .await
+            .map_err(|err| AppError::Internal(format!("Redis DBSIZE 조회에 실패했습니다: {}", err)))
+    }
 }

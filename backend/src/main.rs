@@ -59,6 +59,9 @@ async fn main() {
         .expect("Redis/Dragonfly 연결 실패");
     tracing::info!("[CACHE CONNECTED] {:?} 연결 성공", config.cache.backend);
 
+    // Redis 연결 직후, Metrics용으로 clone
+    let redis_for_metrics = redis.clone();
+
     // Enrichment Provider 3개 생성
     let dns_provider = DnsProvider::new(&config.dns_resolver_host, config.dns_resolver_port)
         .expect("DNS Provider 초기화 실패");
@@ -73,7 +76,8 @@ async fn main() {
     ));
 
     // Prometheus metrics 초기화 (config.broker 기준으로 active_broker 게이지 세팅)
-    let metrics = Arc::new(Metrics::new(&config.broker).expect("metrics 초기화 실패"));
+    let metrics =
+        Arc::new(Metrics::new(&config.broker, &config.cache).expect("metrics 초기화 실패"));
 
     // Kafka/RedPanda Consumer를 백그라운드 태스크로 실행 (HTTP 서버와 별개로 계속 동작)
     let consumer =
@@ -85,6 +89,21 @@ async fn main() {
         metrics.clone(),
         enrichment.clone(),
     ));
+
+    // Redis/Dragonfly Key 개수 반환 매트릭(15초 주기)
+    {
+        let metrics = metrics.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                interval.tick().await;
+                match redis_for_metrics.dbsize().await {
+                    Ok(count) => metrics.cache_key_count.set(count),
+                    Err(err) => tracing::warn!(error = ?err, "캐시 키 개수 조회 실패"),
+                }
+            }
+        });
+    }
 
     // Axum HTTP 서버 구성 및 실행
     let state = Arc::new(AppState {

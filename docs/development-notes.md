@@ -580,6 +580,7 @@ DEL key                  # key 삭제
 TTL key                  # 남은 만료 시간(초) 확인
 PING                     # 연결 확인 (PONG 응답)
 FLUSHDB                  # 현재 DB 전체 삭제
+DBSIZE                   # 현재 DB 전체 key 개수 반환  
 
 SET key value NX         # key가 없을 때만 저장 (이미 존재하면 저장하지 않음), NX(Not eXists)
 SET key value NX EX 10   # key가 없을 때만 저장하고 10초 후 자동 만료
@@ -687,6 +688,13 @@ up
 ```
 등록된 모든 대상의 생존 여부(1=정상, 0=응답 없음) 한눈에 확인
 
+### 5. Redis / Dragonfly 캐시 메트릭
+Redis와 Dragonfly는 Prometheus 메트릭을 제공하는 방식이 다르다.
+
+Redis: 별도의 redis_exporter를 사용해 Redis의 상태와 key 수 등의 메트릭을 Prometheus가 수집하도록 구성
+Dragonfly: 자체 /metrics endpoint를 제공하므로 별도의 exporter 없이 Prometheus가 직접 수집 가능
+
+Shire Guard에서는 캐시 key 개수를 exporter에 의존하지 않고, 애플리케이션에서 DBSIZE 명령어를 사용해 직접 확인하는 방식으로 구현함
 
 ## 📊 cAdvisor (컨테이너 리소스 모니터링)
 
