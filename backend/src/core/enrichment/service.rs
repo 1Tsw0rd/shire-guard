@@ -114,8 +114,8 @@ impl EnrichmentService {
             return cached;
         }
 
-        // 2. 서킷브레이커 상태 확인:
-        if !breaker.allow_request() {
+        // 2. 서킷브레이커 상태 확인 (비소비형 — 여기서 probe를 "써버리지" 않음)
+        if !breaker.peek_allow_request() {
             return self.breaker_open_result(provider); // 서킷브레이커가 현재 Provider 호출을 허용하지 않으면 호출을 건너뜀
         }
 
@@ -179,11 +179,6 @@ impl EnrichmentService {
                     error = ?err,
                     "Redis Lock 시도 실패, 직접 호출로 대체"
                 );
-
-                // Redis 호출에 시간이 걸리는 동안 breaker 상태가 변경됐을 수 있으므로 실제 Provider 호출 직전에 한 번 더 확인
-                if !breaker.allow_request() {
-                    return self.breaker_open_result(provider);
-                }
 
                 self.call_and_store(provider, breaker, ioc, &cache_key)
                     .await
@@ -249,7 +244,7 @@ impl EnrichmentService {
 
         // 기다리는 동안 다른 요청의 실패로 breaker가 Open 상태가 되었을 수 있음
         // 직접 호출하기 전에 반드시 다시 확인
-        if !breaker.allow_request() {
+        if !breaker.peek_allow_request() {
             return self.breaker_open_result(provider);
         }
 
@@ -269,6 +264,14 @@ impl EnrichmentService {
     where
         P::Output: Serialize + DeserializeOwned,
     {
+        // 실제 provider 호출 직전, 여기서만 probe를 "소비"함(CAS 발생 지점을 한 곳으로 고정)
+        // allow_request()가 true를 반환한 이후에는 provider.call()이 반드시 실행되고, 그 결과가 반드시
+        // record_success()/record_failure()로 이어지므로 probe 소비와 보고가 항상 짝을 이룸
+        // false면 provider를 호출하지 않고 반환하므로 probe도 소비되지 않음
+        if !breaker.allow_request() {
+            return self.breaker_open_result(provider);
+        }
+
         match provider.call(ioc).await {
             Ok(data) => {
                 breaker.record_success();

@@ -29,8 +29,7 @@
 // 개념 보충설명:
 // Lock     → 한 번에 하나의 스레드만 특정 코드 영역에 접근하도록 제한
 //
-// Atomic   → 여러 스레드가 공유 상태를 동시에 읽거나 변경해도,
-//            값이 중간에 깨지지 않도록 원자적으로 처리
+// Atomic   → CPU 수준에서 데이터 경합(Data Race)을 막아주어, 여러 스레드가 동시에 접근해도 원자적으로 값을 변경할 수 있는 특수 정수 타입
 //
 // Ordering → 다른 스레드들이 "사용중/사용안함" 같은 상태 변경을
 //            일관된 순서와 가시성으로 인식하도록 하는 메모리 접근 규칙
@@ -38,12 +37,12 @@ use std::sync::atomic::{
     AtomicU8, // 1바이트
 
     AtomicU32, // 4바이트
-    // CPU 수준에서 데이터 경합(Data Race)을 막아주어,
-    // 여러 스레드가 동시에 접근해도 원자적으로 값을 변경할 수 있는 특수 정수 타입
+
     AtomicU64, // 8바이트
+
+    Ordering,
     // 성능 최적화를 위해 컴파일러나 CPU가 코드 실행 순서를 임의로 재배치(Reordering)하는 것을 막아주고,
     // 스레드 간의 메모리 가시성(Visibility)과 실행 순서를 강제하는 규칙
-    Ordering,
 };
 
 use std::time::{Duration, Instant};
@@ -55,7 +54,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum CircuitState {
     // (이해를 위해)차단기 비활성화: 정상 상태
-    // 모든 요청이 정상적으로 통과하며, 최근 실패율이 기준치를 넘으면 Open으로 전환
+    // 모든 요청이 정상적으로 통과하며, 연속 실패 횟수가 임계치(failure_threshold)에 도달하면 Open으로 전환
     Closed = 0,
 
     // 차단기 활성화: 차단 상태
@@ -63,7 +62,7 @@ pub enum CircuitState {
     Open = 1,
 
     // 차단기 반활성화: 간보기(테스트) 상태
-    // 소수의 테스트 요청만 통과시켜 보고, 성공하면 Closed(정상)로 복귀하고 실패하면 다시 Open(차단)으로 후퇴
+    // 테스트 요청 1개만 통과시켜 보고, 성공하면 Closed(정상)로 복귀하고 실패하면 다시 Open(차단)으로 후퇴
     HalfOpen = 2,
 }
 
@@ -92,7 +91,11 @@ impl CircuitBreaker {
         self.epoch.elapsed().as_nanos() as u64 // elapsed()는 Instant::now()로부터 얼마만큼 시간이 흘렀는지 확인
     }
 
-    // 호출 직전 확인: 지금 이 provider를 불러도 되는지
+    // 소비형 확인: 지금 이 provider를 불러도 되는지
+    // Open이고 쿨다운이 지났으면 HalfOpen으로 전환하며 시험 요청(probe)을 소비함
+    // 따라서 provider.call() 직전(call_and_store)에서만 호출해야 하고,
+    // true를 반환받은 호출은 반드시 record_success()/record_failure()로 결과를 보고해야 함
+    // 사전 필터링 용도로는 peek_allow_request()를 사용
     pub fn allow_request(&self) -> bool {
         match self.state.load(Ordering::SeqCst) {
             // 패턴 바인딩을 사용하여 self.state.load(Ordering::SeqCst) 값을 s라는 변수로 지정
@@ -101,7 +104,7 @@ impl CircuitBreaker {
             s if s == CircuitState::Closed as u8 => true,
             s if s == CircuitState::Open as u8 => {
                 let opened_at = self.opened_at_nanos.load(Ordering::SeqCst);
-                // 경과시간(elapsed) = 현재 nanos - opend_at
+                // 경과시간(elapsed) = 현재 nanos - opened_at
                 let elapsed = Duration::from_nanos(self.now_nanos() - opened_at);
                 // Open 유지 시간을 지나지 않았다면 Open(false) 상태임을 알려줌
                 if elapsed < self.cooldown {
@@ -120,6 +123,22 @@ impl CircuitBreaker {
                     .is_ok()
             }
             _ => false, // Half-Open 상태라면 이미 provider request가 진행 중이므로 나머지는 호출 차단
+        }
+    }
+
+    // 상태만 읽고 아무것도 바꾸지 않는 버전
+    // "지금 provider를 부를 자격이 있어 보이는지" 미리 훑어볼 때만 쓰고,
+    // 실제로 provider를 부르기 직전에는 반드시 allow_request()(소비형)를 다시 써야 함
+    // Open이고 쿨다운이 지났어도 여기선 HalfOpen 전환을 일으키지 않음 — CAS 자체가 없으니까
+    pub fn peek_allow_request(&self) -> bool {
+        match self.state.load(Ordering::SeqCst) {
+            s if s == CircuitState::Closed as u8 => true,
+            s if s == CircuitState::Open as u8 => {
+                let opened_at = self.opened_at_nanos.load(Ordering::SeqCst);
+                let elapsed = Duration::from_nanos(self.now_nanos() - opened_at);
+                elapsed >= self.cooldown // 쿨다운 지났으면 "가능성 있음"만 알려줌, 상태는 안 바꿈
+            }
+            _ => false, // HalfOpen이면 이미 누군가 시도 중이니 여기서도 false
         }
     }
 
@@ -247,7 +266,7 @@ mod tests {
         breaker.record_failure(); // 1번 실패
         breaker.record_failure(); // 2번 실패
         breaker.record_failure(); // 3번 실패
-        assert_eq!(breaker.state(), CircuitState::Open); // Opend 상태
+        assert_eq!(breaker.state(), CircuitState::Open); // Open 상태
         assert!(!breaker.allow_request());
     }
 
@@ -319,10 +338,10 @@ mod tests {
         assert!(!breaker.allow_request());
     }
 
-    // 시나리오 9: 여러 스레드가 동시에 실패를 기록해도 threshold를 딱 한 번만 넘겨 Open이 되고
-    // opened_at이 여러 번 재설정되지 않는다 (Closed→Open CAS 검증)
+    // 시나리오 9: 여러 스레드가 동시에 실패를 기록해도 최종 상태는 Open 하나로 수렴
+    // (동시 record_failure에서 Closed -> Open 전환과 카운터 범위 검증, opened_at 유지는 시나리오 10)
     #[test]
-    fn concurrent_failures_open_circuit_exactly_once() {
+    fn concurrent_failures_converge_to_open() {
         use std::sync::Arc;
         use std::thread;
 
@@ -354,7 +373,7 @@ mod tests {
     }
 
     // 시나리오 10: 이미 Open인 상태에서 추가 실패가 들어와도
-    // opened_at이 재설정되지 않는다 (Closed→Open CAS가 상태 전환을 딱 한 번으로 제한하는지 검증)
+    // opened_at이 재설정되지 않는다 (Open 상태의 record_failure() early return 검증)
     #[test]
     fn opened_at_is_not_reset_after_already_open() {
         let breaker = CircuitBreaker::new(1, Duration::from_secs(30));
