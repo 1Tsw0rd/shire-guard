@@ -1,4 +1,4 @@
-# docker compose -f docker-compose.yml  -f docker-compose.opensearch.yml up -d opensearch opensearch-dashboards
+# docker compose -f docker-compose.yml  -f docker-compose.opensearch.yml up -d opensearch opensearch-dashboards opensearch-init
 services:
   opensearch:
     image: opensearchproject/opensearch:latest
@@ -22,7 +22,30 @@ services:
       start_period: 30s
     networks:
       - shire-net
-
+  
+  # opensearch init 서비스
+  opensearch-init:
+    image: opensearchproject/opensearch:latest # opensearch와 같은 이미지 사용
+    container_name: opensearch-init
+    restart: "no" # 1회 실행 후 종료
+    entrypoint:
+      - curl
+      - -fsS # -f: HTTP 오류이면 컨테이너 실패 처리, -s: 진행률 숨김, -S: 에러메시지 출력
+      - -X # HTTP 메서드 지정
+      - PUT
+      - http://opensearch:9200/_index_template/event-logs # event_logs 템플릿 생성
+      - -H # Request Header 지정
+      - "Content-Type: application/json" # Body는 Json
+      - --data-binary # 파일 내용 가공하지 않고 전송
+      - "@/templates/event-logs.json" # @는 파일에서 읽으라는 뜻(컨테이너 내부 경로)
+    volumes:
+      - ./opensearch/templates:/templates:ro     # docker/opensearch/templates/event-logs.json
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks:
+      - shire-net
+      
   opensearch-dashboards:
     image: opensearchproject/opensearch-dashboards:latest
     container_name: opensearch-dashboards
