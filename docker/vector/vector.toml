@@ -82,25 +82,29 @@ encoding.codec = "json"
 #"enable.idempotence" = "true"
 #"acks" = "1"
 
+# ── 비활성화된 싱크 (opensearch_out, clickhouse_out) ──
+# Vector 직접 저장은 테스트용이었음. 저장은 이제 백엔드가 Playbook 처리 후 담당
+# 다시 켜려면 clickhouse_out의 security_events table이 필요함(docker/clickhouse/init/001_init.sql 참고)
+
 # opensearch 전용
-[sinks.opensearch_out]
-type = "elasticsearch"    # OpenSearch도 Elasticsearch 프로토콜 호환이라 이 타입 사용
-inputs = ["normalize"]
-endpoints = ["http://opensearch:9200"]
-mode = "bulk"   # POST /_bluk
-bulk.index = "shire-events-%Y.%m.%d"   # 날짜별 인덱스 자동 생성
-api_version = "v7"    # OpenSearch는 ES 7.x API와 호환
+#[sinks.opensearch_out]
+#type = "elasticsearch"    # OpenSearch도 Elasticsearch 프로토콜 호환이라 이 타입 사용
+#inputs = ["normalize"]
+#endpoints = ["http://opensearch:9200"]
+#mode = "bulk"   # POST /_bluk
+#bulk.index = "shire-events-%Y.%m.%d"   # 날짜별 인덱스 자동 생성
+#api_version = "v7"    # OpenSearch는 ES 7.x API와 호환
 
 # clickhouse: 집계/통계용 저장소로 전달
-[sinks.clickhouse_out]
-type = "clickhouse"
-inputs = ["normalize"]
-endpoint = "http://clickhouse:8123"
-database = "${CLICKHOUSE_DB}"
-table = "security_events"
-auth.strategy = "basic"
-auth.user = "${CLICKHOUSE_USER}"
-auth.password = "${CLICKHOUSE_PASSWORD}"
+#[sinks.clickhouse_out]
+#type = "clickhouse"
+#inputs = ["normalize"]
+#endpoint = "http://clickhouse:8123"
+#database = "${CLICKHOUSE_DB}"
+#table = "security_events"
+#auth.strategy = "basic"
+#auth.user = "${CLICKHOUSE_USER}"
+#auth.password = "${CLICKHOUSE_PASSWORD}"
 
 # ── 내부 메트릭 소스: Vector 자신의 처리 통계(수신/발신 이벤트 수 등)를 생성 ──
 [sources.internal_metrics]
@@ -136,15 +140,15 @@ address = "0.0.0.0:9598"
 # 이 테스트 설정은 Kafka/RedPanda의 동작을 방해하지 않게 하는 위한 목적을 가지며
 # 테스트 종료 시, 실제 사용하는 Kafka 또는 RedPanda 둘 중 하나만 활성화하고 나머지는 주석처리 예정
 
-[sinks.clickhouse_out.buffer]
-type = "disk"
-max_size = 1073741824     # 실제 디스크 사용량이 아니라 해당 buffer가 사용할 수 있는 최대 크기: 1GiB
-when_full = "drop_newest" # max_size 초과할 경우 새로 들어오는 event 들은 버림, disk 타입 버퍼는 쓰이지 않은 이벤트를 버퍼에 보관되어 Sink 복구 후 처리될 기회를 제공
+#[sinks.clickhouse_out.buffer]
+#type = "disk"
+#max_size = 1073741824     # 실제 디스크 사용량이 아니라 해당 buffer가 사용할 수 있는 최대 크기: 1GiB
+#when_full = "drop_newest" # max_size 초과할 경우 새로 들어오는 event 들은 버림, disk 타입 버퍼는 쓰이지 않은 이벤트를 버퍼에 보관되어 Sink 복구 후 처리될 기회를 제공
 
-[sinks.opensearch_out.buffer]
-type = "disk"
-max_size = 1073741824
-when_full = "drop_newest"
+#[sinks.opensearch_out.buffer]
+#type = "disk"
+#max_size = 1073741824
+#when_full = "drop_newest"
 
 [sinks.kafka_out.buffer]
 type = "memory"

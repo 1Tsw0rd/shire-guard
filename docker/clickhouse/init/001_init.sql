@@ -1,12 +1,14 @@
-CREATE TABLE IF NOT EXISTS shire.security_events (
-    event_type String,
-    source_ip String,
-    failed_count UInt32,
-    success_count UInt32,
-    username String,
-    timestamp DateTime64(3)
-) ENGINE = MergeTree()
-ORDER BY timestamp;
+-- vector.toml 테스트용
+-- CREATE TABLE IF NOT EXISTS shire.security_events (
+--     event_type String,
+--     source_ip String,
+--     failed_count UInt32,
+--     success_count UInt32,
+--     username String,
+--     timestamp DateTime64(3)
+-- ) ENGINE = MergeTree()
+-- ORDER BY timestamp; No newline at end of file
+
 -- 테이블 생성
 CREATE TABLE IF NOT EXISTS shire.event_logs (
     event_id         String,                            -- 이벤트 ID (클릭하우스는 일반 RDBMS와 다르므로 별도 id 컬럼 사용 안함)
