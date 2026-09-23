@@ -9,6 +9,7 @@ axum = "0.8.9"
 chrono = { version = "0.4.45", features = ["serde"] }
 dotenvy = "0.15.7"
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["tokio"] }
+ipnet = "2.12.2"
 prometheus = "0.14.0"
 rdkafka = { version = "0.39.0", features = ["cmake-build"] }
 redis = { version = "1.7.0", features = ["tokio-comp", "connection-manager"] }

@@ -169,6 +169,7 @@ dependencies = [
  "dotenvy",
  "hickory-resolver",
  "http-body-util",
+ "ipnet",
  "prometheus",
  "rdkafka",
  "redis",
