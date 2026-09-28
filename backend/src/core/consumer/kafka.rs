@@ -40,6 +40,7 @@ use crate::common::metrics::Metrics;
 use crate::config::BrokerConfig;
 use crate::core::consumer::event::RawEvent;
 use crate::core::enrichment::service::EnrichmentService;
+use crate::core::playbook::engine::PlaybookEngine;
 
 // librdkafka가 statistics.interval.ms 주기로 통계를 콜백해줄 때 받는 커스텀 컨텍스트
 pub struct KafkaConsumerContext {
@@ -118,6 +119,7 @@ pub async fn run(
     topic: String,
     metrics: Arc<Metrics>,
     enrichment: Arc<EnrichmentService>,
+    engine: Arc<PlaybookEngine>,
 ) {
     // Topic 구독
     if let Err(e) = consumer.subscribe(&[&topic]) {
@@ -148,11 +150,38 @@ pub async fn run(
 
                         // TODO Enrichment 실행 (Playbook Engine이 아직 없으므로 결과는 로그로만 확인)
                         let evidence = enrichment.enrich_event(event).await;
-                        tracing::info!(
+                        tracing::debug!(
                             event_id = %evidence.event.event_id,
                             "[ENRICHMENT COMPLETE] 조사 완료"
                         );
                         tracing::trace!(?evidence, "[EVIDENCE] {:?}", evidence);
+
+                        // Playbook 평가
+                        // TODO 저장 배선 단계에서 이 결과를 OpenSearch/ClickHouse 저장으로 교체
+                        match engine.run(&evidence).await {
+                            Some(result) => {
+                                tracing::debug!(
+                                    event_id = %evidence.event.event_id,
+                                    action = ?result.action,
+                                    evaluated = result.evaluated,
+                                    "[PLAYBOOK DECIDED] Playbook 판정 완료"
+                                );
+                                match serde_json::to_string(&result) {
+                                    Ok(json) => {
+                                        tracing::debug!(playbook_result = %json, "[PLAYBOOK RESULT]")
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "playbook_result 직렬화 실패")
+                                    }
+                                }
+                            }
+                            None => {
+                                tracing::debug!(
+                                    event_id = %evidence.event.event_id,
+                                    "[PLAYBOOK NO DECISION] 결정한 Playbook 없음, 원본 그대로 통과"
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
                         metrics.consumer_events_failed.inc();

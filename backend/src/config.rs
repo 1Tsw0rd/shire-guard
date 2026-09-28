@@ -52,6 +52,9 @@ pub struct AppConfig {
     pub virustotal_api_key: String,
     pub dns_resolver_host: String,
     pub dns_resolver_port: u16,
+
+    // Playbook AI (Ollama)
+    pub ollama_base_url: String,
 }
 
 impl AppConfig {
@@ -89,6 +92,14 @@ impl AppConfig {
                 .map_err(|_| {
                     AppError::Internal("DNS_RESOLVER_PORT는 올바른 정수여야 합니다.".into())
                 })?,
+
+            // Rust는 호스트에서 실행되므로 Ollama는 localhost의 매핑된 포트로 접속
+            ollama_base_url: {
+                let port = std::env::var("OLLAMA_PORT").map_err(|_| {
+                    AppError::Internal("OLLAMA_PORT 환경변수가 설정되지 않았습니다.".into())
+                })?;
+                format!("http://localhost:{port}")
+            },
         })
     }
 }
