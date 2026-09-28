@@ -313,6 +313,73 @@ fn get_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     }
 }
 
+// when 문자열 렌더링 (palybook_result.playbooks[].when에 들어갈 값)
+// eval()과 반대 방향: Expr을 사람이 읽는 문자열로 바꿈
+// 재파싱 용도가 아니라 과거 기록/조회용이라 값에 따옴표를 씌우지 않음
+pub fn render_when(expr: &Expr) -> String {
+    match expr {
+        Expr::And { and } => format!(
+            "({})",
+            // 예:
+            // and = [
+            //     { "field": "event_type", "op": "eq", "value": "file_download" },
+            //     { "field": "file_size_bytes", "op": "gt", "value": 100000 }
+            // ]
+            //
+            // 1. iter(): Vec<Expr>의 각 조건을 하나씩 순회
+            //    → condition1, condition2
+            //
+            // 2. map(render_when): 각 조건을 사람이 읽는 문자열로 변환
+            //    → render_when() 내부의 render_value()가 값의 타입에 따라 문자열을 만듦
+            //    → JSON 문자열은 Value::String => s.clone() 처리로 따옴표(" ")를 제거
+            //      "file_download" → file_download
+            //    → JSON 숫자는 Value::Number => n.to_string() 처리로 숫자 그대로 사용
+            //      100000 → 100000
+            //    → "(event_type eq file_download)"
+            //      "(file_size_bytes gt 100000)"
+            //
+            // 3. collect::<Vec<_>>(): 변환된 문자열들을 Vec<String>으로 모음
+            //
+            //    [
+            //        "(event_type eq file_download)",
+            //        "(file_size_bytes gt 100000)"
+            //    ]
+            //
+            // 4. join(" and "): 문자열 사이에 " and "를 넣어 하나로 합침
+            //    → "(event_type eq file_download) and (file_size_bytes gt 100000)"
+            and.iter()
+                .map(render_when)
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ),
+        Expr::Or { or } => format!(
+            "({})",
+            or.iter().map(render_when).collect::<Vec<_>>().join(" or ")
+        ),
+        Expr::Cond(condition) => render_condition(condition),
+    }
+}
+
+fn render_condition(c: &Condition) -> String {
+    match &c.value {
+        // exists/not_exists는 값이 없으므로 "(필드 연산자)" 형태
+        None => format!("({} {})", c.field, c.op.as_str()),
+        Some(v) => format!("({} {} {})", c.field, c.op.as_str(), render_value(v)),
+    }
+}
+
+// 값 렌더링:
+// - 문자열(Value::String): JSON의 따옴표를 제거하고 실제 값만 사용
+// - 숫자(Value::Number): 숫자 값을 그대로 문자열로 변환
+// - 그 외(배열/객체/불리언/null): JSON 표기로 변환
+fn render_value(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(), // "file_download" -> file_download
+        Value::Number(n) => n.to_string(),
+        other => other.to_string(), // 방어코드: Bool/Array/Object/Null → JSON 표기 (예: true, [1,2], {"a":1})
+    }
+}
+
 // cargo test --lib playbook::condition
 #[cfg(test)]
 mod tests {
@@ -594,5 +661,47 @@ mod tests {
             ],
         };
         assert!(eval(&expr, &event));
+    }
+
+    // ── render_when ──
+    // 시나리오 17: 단일 조건(exists 계열 아님)이 "(필드 연산자 값)" 형태로 렌더링된다
+    #[test]
+    fn render_when_single_condition() {
+        let expr = cond("event_type", Op::Eq, Some(json!("file_download"))); // field="event_type", op=eq, value="file_download"
+        assert_eq!(render_when(&expr), "(event_type eq file_download)");
+    }
+
+    // 시나리오 18: exists/not_exists는 값 없이 "(필드 연산자)" 형태로 렌더링된다
+    #[test]
+    fn render_when_exists_has_no_value() {
+        let expr = cond("dst_domain", Op::NotExists, None);
+        assert_eq!(render_when(&expr), "(dst_domain not_exists)");
+    }
+
+    // 시나리오 19: 숫자 value는 따옴표 없이 렌더링된다
+    #[test]
+    fn render_when_numeric_value_has_no_quotes() {
+        let expr = cond("file_size_bytes", Op::Gt, Some(json!(100000)));
+        assert_eq!(render_when(&expr), "(file_size_bytes gt 100000)");
+    }
+
+    // 시나리오 20: 중첩된 and/or 조건을 Expr로 파싱한 후 올바른 when 문자열로 렌더링되는지 확인
+    #[test]
+    fn render_when_matches_doc_nested_example() {
+        let expr: Expr = serde_json::from_str(
+            r#"{ "or": [
+                { "field": "enrichment_file_sha256.data.malicious", "op": "gte", "value": 10 },
+                { "and": [
+                    { "field": "enrichment_src_ip.data.abuse_confidence_score", "op": "gte", "value": 80 },
+                    { "field": "file_size_bytes", "op": "gt", "value": 100000 }
+                ] }
+            ] }"#,
+        )
+        .expect("파싱 실패");
+
+        assert_eq!(
+            render_when(&expr),
+            "((enrichment_file_sha256.data.malicious gte 10) or ((enrichment_src_ip.data.abuse_confidence_score gte 80) and (file_size_bytes gt 100000)))"
+        );
     }
 }

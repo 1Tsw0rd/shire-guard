@@ -132,6 +132,26 @@ pub enum Op {
     NotInCidr, // IP가 CIDR 대역에 포함되지 않는지 확인
 }
 
+impl Op {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Op::Exists => "exists",
+            Op::NotExists => "not_exists",
+            Op::Eq => "eq",
+            Op::Ne => "ne",
+            Op::Gt => "gt",
+            Op::Gte => "gte",
+            Op::Lt => "lt",
+            Op::Lte => "lte",
+            Op::Contains => "contains",
+            Op::StartsWith => "starts_with",
+            Op::EndsWith => "ends_with",
+            Op::InCidr => "in_cidr",
+            Op::NotInCidr => "not_in_cidr",
+        }
+    }
+}
+
 // 조건 하나
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Condition {

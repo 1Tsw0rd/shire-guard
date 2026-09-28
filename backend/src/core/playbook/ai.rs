@@ -86,6 +86,7 @@ struct AiJudgment {
     reason: String,
 }
 
+#[derive(Clone)]
 pub struct AiClient {
     http: reqwest::Client,
     redis: RedisClient,
@@ -283,7 +284,7 @@ fn cache_key(
     // \0은 model/prompt/JSON 문자열 어디에도 나타나지 않는 값이라 경계 표시로 사용
     hasher.update(prompt.as_bytes()); // 이어서 prompt를 해시 계산에 입력
     hasher.update(b"\0");
-    hasher.update(normalized.as_str().as_bytes()); // 이어서 정규화된 Evidence JSON을 해시 계산에 입력
+    hasher.update(normalized.as_bytes()); // 이어서 정규화된 Evidence JSON을 해시 계산에 입력
 
     let digest = hasher.finalize(); // 지금까지 입력한 모든 데이터를 바탕으로 SHA-256 최종 결과를 반환 (32 바이트)
 
