@@ -104,15 +104,27 @@ async fn main() {
     ));
 
     // Redis/Dragonfly Key 개수 반환 매트릭(15초 주기)
+    // 조회 실패 후 다시 성공하면 연결 복구 로그를 남김
     {
         let metrics = metrics.clone();
+        let cache_backend = config.cache.backend;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            let mut connected = true; // 시작할 때 연결에 성공했으므로 true로 시작
             loop {
                 interval.tick().await;
                 match redis_for_metrics.dbsize().await {
-                    Ok(count) => metrics.cache_key_count.set(count),
-                    Err(err) => tracing::warn!(error = ?err, "캐시 키 개수 조회 실패"),
+                    Ok(count) => {
+                        metrics.cache_key_count.set(count);
+                        if !connected {
+                            tracing::info!("[CACHE RECONNECTED] {:?} 연결 복구됨", cache_backend);
+                            connected = true;
+                        }
+                    }
+                    Err(err) => {
+                        connected = false;
+                        tracing::warn!(error = ?err, "캐시 키 개수 조회 실패");
+                    }
                 }
             }
         });
