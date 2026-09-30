@@ -1,0 +1,34 @@
+{
+  "model": "qwen2.5:14b-instruct",
+  "created_at": "2026-09-26T12:39:09.55915638Z",
+  "message": {
+    "role": "assistant",
+    "content": "{\"risk\":\"HIGH\",\"reason\":\"The file name 'invoice.exe' is suspicious because it ends with '.exe', which is an executable file type. Executable files can potentially run harmful programs on your computer if they are downloaded from untrusted sources. The name 'invoice' is generic and does not provide any specific information about the file's origin or purpose, making it easy to disguise malicious intent.\"}"
+  },
+  "done": true,
+  "done_reason": "stop",
+  "total_duration": 38329905745,
+  "load_duration": 22066337603,
+  "prompt_eval_count": 50,
+  "prompt_eval_duration": 13758529000,
+  "eval_count": 82,
+  "eval_duration": 2500710000
+}
+
+
+{
+  "model": "hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF",
+  "created_at": "2026-09-26T12:40:57.270430344Z",
+  "message": {
+    "role": "assistant",
+    "content": "{\"reason\":\"User reported missing file\",\"risk\":\"HIGH\"}"
+  },
+  "done": true,
+  "done_reason": "stop",
+  "total_duration": 24682564489,
+  "load_duration": 16375657698,
+  "prompt_eval_count": 45,
+  "prompt_eval_duration": 8033831000,
+  "eval_count": 14,
+  "eval_duration": 268067999
+}

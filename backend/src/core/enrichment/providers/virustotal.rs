@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -89,7 +91,10 @@ pub struct VirusTotalProvider {
 impl VirusTotalProvider {
     pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("VirusTotal HTTP client 생성 실패"),
             api_key,
         }
     }

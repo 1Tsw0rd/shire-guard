@@ -40,6 +40,33 @@ use crate::common::metrics::Metrics;
 use crate::config::BrokerConfig;
 use crate::core::consumer::event::RawEvent;
 use crate::core::enrichment::service::EnrichmentService;
+use crate::core::playbook::engine::PlaybookEngine;
+
+use tokio::sync::Semaphore;
+
+/*
+PROCESS_CONCURRENCY 상수 설명
+- 동시에 처리할 이벤트 수 (Enrichment 실행 + Playbook 평가 구간)
+- 이벤트 하나가 Redis/Dragonfly 왕복을 기다리는 동안 다른 이벤트를 함께 처리해서 대기 시간을 겹치게 함
+
+성능 테스트 결과 (release 빌드, 쌓인 이벤트를 소비만 하는 조건, IOC 고정으로 전부 캐시 히트):
+  직렬(1)   : 약 1.4K/s
+  256       : 약 62K/s
+  512       : 약 94K/s   (256 대비 +52%)
+  1024      : 약 99K/s   (512 대비 +5%, 측정 오차 범위 수준)
+  2048      : 약 105K/s 성능을 보여줬지만, 테스트 당시 Redis/Dragonfly 응답 지연으로 타임아웃 발생, 약 58만 건 처리 후 정지
+=> 512 이상부터는 증가폭이 크지 않지만, 여유를 더 확보하고자 1024를 기본값으로 확정함
+
+[참고사항]
+포트폴리오에선 실제 외부 장비의 검증된 이벤트를 수신할 수 없어,
+임의의 테스트 이벤트를 처리하는데
+실제 운영하는 장비로 개발할 경우 Enrichment 처리는 제거되는 기능이지만
+Redis/Dragonfly에 평판정보를 캐싱하여 Playbook에서 평판처리를 하는 기능을 구현할 경우
+Enrichment 처리 로직과 비슷하기 때문에
+
+Enrichment 처리 -> Playbook 평가 동작을 병렬로 처리하는 기능을 구현하고 적용함
+*/
+const PROCESS_CONCURRENCY: usize = 1024;
 
 // librdkafka가 statistics.interval.ms 주기로 통계를 콜백해줄 때 받는 커스텀 컨텍스트
 pub struct KafkaConsumerContext {
@@ -118,6 +145,7 @@ pub async fn run(
     topic: String,
     metrics: Arc<Metrics>,
     enrichment: Arc<EnrichmentService>,
+    engine: Arc<PlaybookEngine>,
 ) {
     // Topic 구독
     if let Err(e) = consumer.subscribe(&[&topic]) {
@@ -127,12 +155,22 @@ pub async fn run(
 
     tracing::info!(%topic, "[TOPIC SUBSCRIBED] 메시지 수신 대기 중...");
 
+    // 동시에 처리할 수 있는 이벤트 수를 제한하는 Semaphore
+    // Semaphore는 정해진 개수의 permit(허가증)을 가지고 있으며,
+    // 이벤트 하나가 처리될 때 permit 하나를 빌려주고 처리가 끝나면 반환함
+    // 여기서는 PROCESS_CONCURRENCY만큼 permit을 생성하여,
+    // 동시에 처리할 수 있는 이벤트 수를 제한함
+    //
+    // recv()는 Kafka/RedPanda에서 메시지 하나를 받아오는 메서드인데,
+    // 처리 중인 이벤트가 PROCESS_CONCURRENCY에 도달하면 permit 획득(acquire_owned)에서 대기하게 되고,
+    // 그 사이 루프는 다음 recv()를 호출하지 못하므로 처리 중인 이벤트 수를 초과하여 Task 생성되는 것을 방지함
+    // 밀린 이벤트는 이 프로세스 메모리가 아니라 Kafka/RedPanda 쪽에 그대로 쌓임
+    let semaphore = Arc::new(Semaphore::new(PROCESS_CONCURRENCY));
+
     // 메시지 수신 루프
     loop {
         match consumer.recv().await {
             Ok(msg) => {
-                // inc(): 카운터를 1 증가시킴 — "수집(gather)"이 아니라 "지금 이벤트 하나 처리했다"를 기록하는 동작
-                // 동시 호출에도 안전(atomic)
                 metrics.consumer_messages_received.inc();
 
                 let Some(payload) = msg.payload() else {
@@ -146,13 +184,24 @@ pub async fn run(
                         metrics.consumer_events_parsed.inc();
                         tracing::debug!(?event, "[EVENT PARSED] 이벤트 수신 및 파싱 성공");
 
-                        // TODO Enrichment 실행 (Playbook Engine이 아직 없으므로 결과는 로그로만 확인)
-                        let evidence = enrichment.enrich_event(event).await;
-                        tracing::info!(
-                            event_id = %evidence.event.event_id,
-                            "[ENRICHMENT COMPLETE] 조사 완료"
-                        );
-                        tracing::trace!(?evidence, "[EVIDENCE] {:?}", evidence);
+                        // permit은 반드시 spawn 전에 획득해야 함
+                        // spawn은 비동기 작업을 별도의 Task로 실행하는 것을 의미함
+                        // spawn 이후에 permit을 획득하면 입력이 빠를 때 Task가 제한 없이 생성될 수 있음
+                        let Ok(permit) = semaphore.clone().acquire_owned().await else {
+                            tracing::error!(
+                                "[SEMAPHORE CLOSED] Semaphore가 닫혀 consumer를 종료함"
+                            );
+                            return;
+                        };
+
+                        let enrichment = enrichment.clone();
+                        let engine = engine.clone();
+
+                        // 병렬 처리 실행
+                        tokio::spawn(async move {
+                            let _permit = permit; // Task가 종료되면 permit이 drop되어 Semaphore에 자동 반환됨
+                            process_event(event, &enrichment, &engine).await;
+                        });
                     }
                     Err(e) => {
                         metrics.consumer_events_failed.inc();
@@ -163,6 +212,44 @@ pub async fn run(
             Err(e) => {
                 tracing::error!(error = %e, "[MESSAGE RECV FAILED] Kafka 메시지 수신 실패");
             }
+        }
+    }
+}
+
+// 이벤트 하나를 처리: Enrichment 실행 -> Playbook 평가
+async fn process_event(event: RawEvent, enrichment: &EnrichmentService, engine: &PlaybookEngine) {
+    // Enrichment 실행
+    let evidence = enrichment.enrich_event(event).await;
+    tracing::debug!(
+        event_id = %evidence.event.event_id,
+        "[ENRICHMENT COMPLETE] 조사 완료"
+    );
+    tracing::trace!(?evidence, "[EVIDENCE] {:?}", evidence);
+
+    // Playbook 평가
+    // TODO 저장 배선 단계에서 이 결과를 OpenSearch/ClickHouse 저장으로 교체
+    match engine.run(&evidence).await {
+        Some(result) => {
+            tracing::debug!(
+                event_id = %evidence.event.event_id,
+                action = ?result.action,
+                evaluated = result.evaluated,
+                "[PLAYBOOK DECIDED] Playbook 판정 완료"
+            );
+            match serde_json::to_string(&result) {
+                Ok(json) => {
+                    tracing::debug!(playbook_result = %json, "[PLAYBOOK RESULT]")
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "playbook_result 직렬화 실패")
+                }
+            }
+        }
+        None => {
+            tracing::debug!(
+                event_id = %evidence.event.event_id,
+                "[PLAYBOOK NO DECISION] 결정한 Playbook 없음, 원본 그대로 통과"
+            );
         }
     }
 }

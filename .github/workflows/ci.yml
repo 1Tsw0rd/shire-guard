@@ -18,6 +18,13 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
 
+    # sqlx::query! 매크로는 컴파일할 때 SQL을 검사하며, 기본적으로 DATABASE_URL로 DB에 접속함
+    # CI에는 DB가 없으므로 오프라인 모드로 설정해 backend/.sqlx/ 에 저장된 검사 결과를 사용함
+    # .sqlx/ 는 로컬에서 `cargo sqlx prepare -- --all-targets` 로 생성해 커밋함
+    # (쿼리를 수정하면 로컬에서 prepare를 다시 실행하고 커밋해야 하며, 안 하면 CI가 실패함)
+    env:
+      SQLX_OFFLINE: true
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -32,6 +39,10 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
+        # Rust 프로젝트가 저장소 루트가 아니라 backend/ 안에 있으므로 위치를 지정함
+        # workspaces: Rust 프로젝트의 workspace 경로를 지정하는 설정
+        with:
+          workspaces: backend
 
       - name: Cargo fmt check
         run: cargo fmt --check

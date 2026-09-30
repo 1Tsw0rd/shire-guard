@@ -17,6 +17,9 @@ use backend::core::enrichment::providers::abuseipdb::AbuseIpDbProvider;
 use backend::core::enrichment::providers::dns::DnsProvider;
 use backend::core::enrichment::providers::virustotal::VirusTotalProvider;
 use backend::core::enrichment::service::EnrichmentService;
+use backend::core::playbook::ai::AiClient;
+use backend::core::playbook::engine::PlaybookEngine;
+use backend::core::playbook::store::PlaybookStore;
 use backend::state::AppState;
 
 #[tokio::main]
@@ -59,8 +62,8 @@ async fn main() {
         .expect("Redis/Dragonfly 연결 실패");
     tracing::info!("[CACHE CONNECTED] {:?} 연결 성공", config.cache.backend);
 
-    // Redis 연결 직후, Metrics용으로 clone
-    let redis_for_metrics = redis.clone();
+    let redis_for_metrics = redis.clone(); // Redis 연결 직후, Metrics용으로 clone
+    let redis_for_ai = redis.clone(); // Playbook AI 캐시용으로 clone (redis는 아래 EnrichmentService로 이동됨)
 
     // Enrichment Provider 3개 생성
     let dns_provider = DnsProvider::new(&config.dns_resolver_host, config.dns_resolver_port)
@@ -75,6 +78,15 @@ async fn main() {
         virustotal_provider,
     ));
 
+    // Playbook Engine: 활성 Playbook 로드 + AI Client + 엔진 조립
+    // Postgres 접속/쿼리 실패는 fail-fast (개별 Playbook 파싱 실패는 store 안에서 건너뜀)
+    let playbook_store = PlaybookStore::load(&postgres)
+        .await
+        .expect("Playbook 로드 실패");
+    let ai_client =
+        AiClient::new(redis_for_ai, config.ollama_base_url.clone()).expect("AI Client 생성 실패");
+    let engine = Arc::new(PlaybookEngine::new(playbook_store, ai_client));
+
     // Prometheus metrics 초기화 (config.broker 기준으로 active_broker 게이지 세팅)
     let metrics =
         Arc::new(Metrics::new(&config.broker, &config.cache).expect("metrics 초기화 실패"));
@@ -88,18 +100,31 @@ async fn main() {
         topic,
         metrics.clone(),
         enrichment.clone(),
+        engine,
     ));
 
     // Redis/Dragonfly Key 개수 반환 매트릭(15초 주기)
+    // 조회 실패 후 다시 성공하면 연결 복구 로그를 남김
     {
         let metrics = metrics.clone();
+        let cache_backend = config.cache.backend;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            let mut connected = true; // 시작할 때 연결에 성공했으므로 true로 시작
             loop {
                 interval.tick().await;
                 match redis_for_metrics.dbsize().await {
-                    Ok(count) => metrics.cache_key_count.set(count),
-                    Err(err) => tracing::warn!(error = ?err, "캐시 키 개수 조회 실패"),
+                    Ok(count) => {
+                        metrics.cache_key_count.set(count);
+                        if !connected {
+                            tracing::info!("[CACHE RECONNECTED] {:?} 연결 복구됨", cache_backend);
+                            connected = true;
+                        }
+                    }
+                    Err(err) => {
+                        connected = false;
+                        tracing::warn!(error = ?err, "캐시 키 개수 조회 실패");
+                    }
                 }
             }
         });

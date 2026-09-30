@@ -1,0 +1,53 @@
+{
+  "index_patterns": ["event-logs-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.mapping.ignore_malformed": true 
+    },
+    "mappings": {
+      "dynamic_templates": [
+    
+        { "strings_as_keyword": {
+            "match_mapping_type": "string",
+            "mapping": { "type": "keyword", "ignore_above": 1024 } } }
+      ],
+      "properties": {
+        "event_id":        { "type": "keyword", "ignore_above": 1024 },
+        "event_type":      { "type": "keyword", "ignore_above": 1024 },
+        "timestamp":       { "type": "date" }, 
+        "src_ip":          { "type": "ip" },
+        "dst_domain":      { "type": "keyword", "ignore_above": 1024 },
+        "file_name":       { "type": "keyword", "ignore_above": 1024 },
+        "file_sha256":     { "type": "keyword", "ignore_above": 1024 },
+        "file_size_bytes": { "type": "long" },
+        "ingested_at":     { "type": "date" },
+        "enrichment_dst_domain": { "properties": { "data": { "properties": {
+          "resolved_ips": { "type": "ip" }
+        } } } },
+        "playbook_result": { "properties": {
+          "action":       { "type": "keyword" },
+          "evaluated":    { "type": "integer" },
+          "processed_at": { "type": "date" },
+          "playbooks": {
+            "type": "nested",
+            "properties": {
+              "playbook_id": { "type": "long" },
+              "name":        { "type": "keyword" },
+              "action":      { "type": "keyword" }, 
+              "when":        { "type": "keyword", "ignore_above": 4096 },
+              "ai_result": { "properties": {
+                "status": { "type": "keyword" },
+                "risk":   { "type": "keyword" },
+                "reason": { "type": "keyword", "ignore_above": 4096 },
+                "error":  { "type": "keyword" },
+                "model":  { "type": "keyword" } 
+              } }
+            }
+          }
+        } }
+      }
+    }
+  }
+}
