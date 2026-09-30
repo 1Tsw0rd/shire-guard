@@ -32,10 +32,6 @@ jobs:
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
-        # Rust 프로젝트가 저장소 루트가 아니라 backend/ 안에 있으므로 위치를 지정함
-        # workspaces: Rust 프로젝트의 workspace 경로를 지정하는 설정
-        with:
-          workspaces: backend
 
       - name: Cargo fmt check
         run: cargo fmt --check
