@@ -1,7 +1,7 @@
 /*
 Event
     ↓
-IOC Field Extraction (event.rs의 enrichment_iocs())
+IOC Field 추출 (event.rs의 enrichment_iocs())
     ↓
 ┌───────────────────────┐
 │ src_ip 존재?          │ → AbuseIPDB
@@ -14,6 +14,81 @@ IOC Field Extraction (event.rs의 enrichment_iocs())
 Enriched Evidence
     ↓
 Playbook
+
+[캐시 / Lock / Provider 호출 흐름]
+각 IOC마다 먼저 Redis/Dragonfly 캐시를 확인함
+
+  캐시 조회
+    ├─ Hit
+    │    → 저장된 enrichment 결과 반환
+    │
+    ├─ Unavailable (Redis/Dragonfly 장애)
+    │    → Provider 호출하지 않고 CacheUnavailable 반환
+    │
+    └─ Miss (캐시에 결과가 없음)
+         ↓
+       Circuit Breaker 확인
+         ├─ 호출 불가(Open 상태에서 쿨다운 30초 이내이거나, HalfOpen 상태에서 시험 요청이 진행 중인 상태)
+         │    → Provider 호출하지 않고 Error 반환
+         │
+         └─ 호출 가능
+              ↓
+            분산 Lock 획득 시도
+              ├─ Lock 획득
+              │    ↓
+              │  캐시 재확인
+              │    ├─ Hit
+              │    │    → Lock 해제 후 저장된 결과 반환
+              │    │
+              │    ├─ Unavailable (Redis/Dragonfly 장애)
+              │    │    → Lock 해제 후 CacheUnavailable 반환
+              │    │
+              │    └─ Miss
+              │         ↓
+              │       Provider 호출 직전 Circuit Breaker 재확인 (쿨다운이 지나면 시험 요청 1개만 통과)
+              │         ├─ 호출 불가 → Provider 호출하지 않고 Error 반환
+              │         └─ 호출 가능 → Provider 호출
+              │                        ├─ Success  → 캐시 저장
+              │                        ├─ NotFound → 캐시 저장
+              │                        └─ 실패     → 캐시 저장하지 않음
+              │         ↓
+              │       Lock 해제 후 EnrichmentResult 반환
+              │
+              ├─ Lock 획득 실패 (다른 요청이 Lock을 보유 중)
+              │    ↓
+              │  캐시 결과를 기다림 (100ms마다 확인, 최대 3초)
+              │    ├─ Hit         → 저장된 결과 반환
+              │    ├─ Unavailable → CacheUnavailable 반환
+              │    └─ 3초 초과    → Timeout 반환
+              │
+              └─ Lock 시도 자체가 에러 (Redis/Dragonfly 장애)
+                   → Provider 호출하지 않고 CacheUnavailable 반환
+
+Lock을 획득한 요청도 실제 Provider 호출 직전에 캐시를 한 번 더 확인함
+처음 캐시를 확인한 뒤 Lock을 획득하기 전에, 다른 요청이 Provider 호출을 끝내고
+캐시에 결과를 저장한 뒤 Lock을 해제했을 수 있기 때문임
+
+예:
+
+요청 A                         요청 B
+  │                              │
+  │ 캐시 → MISS                   │ 캐시 → MISS
+  │                              │
+  │                              │ Lock 획득
+  │                              │ Provider API 호출
+  │                              │ 캐시 저장
+  │                              │ Lock 해제
+  │ Lock 획득                     │
+  │                              │
+  │ 캐시 다시 확인                 │
+  │ → HIT                        │
+  │                              │
+  └→ Provider API 호출 안 함       │
+
+B가 Lock을 쥐고 있는 동안 A가 Lock을 시도하면 획득에 실패하고,
+A는 Lock을 다시 시도하지 않고 캐시에 결과가 저장되기를 기다림
+
+즉, 같은 IOC에 대한 중복 외부 API 호출을 분산 Lock과 캐시 재확인으로 줄임
 
 서킷 브레이커 장치 작동 설명은 circuit_breaker.rs 참고
 */
@@ -41,6 +116,13 @@ const LOCK_MAX_WAIT_MS: u64 = 3000; // 최대 대기시간(3000ms)
 
 const BREAKER_FAILURE_THRESHOLD: u32 = 3; // 이 횟수만큼 연속 실패하면 서킷브레이커가 Open으로 전환됨
 const BREAKER_COOLDOWN: Duration = Duration::from_secs(30); // 서킷브레이커 OPEN 상태에서 HALF-OPEN 상태로 전환하기까지 대기하는 시간
+
+// try_read_cache()의 조회 결과
+enum CacheLookup<T> {
+    Hit(T),      // Redis/Dragonfly 캐시에 값이 있고 파싱 성공
+    Miss,        // Redis/Dragonfly는 정상 응답했지만 값이 없음 (값 파싱 실패도 Miss 취급)
+    Unavailable, // Redis/Dragonfly 자체가 응답하지 않거나 에러
+}
 
 // provider마다 서킷브레이커를 독립적으로 가짐
 // 예를 들어 DNS 장애가 AbuseIPDB 호출을 막으면 안 되므로 각각 별도의 breaker를 사용
@@ -109,9 +191,14 @@ impl EnrichmentService {
         let cache_key = format!("enrichment:{}:{}", provider.name(), ioc);
 
         // 1. 캐시 확인: 캐시가 있으면 외부 Provider와 관계없이 바로 반환
-        if let Some(mut cached) = self.try_read_cache::<P::Output>(&cache_key).await {
-            cached.cached = true;
-            return cached;
+        match self.try_read_cache::<P::Output>(&cache_key).await {
+            CacheLookup::Hit(mut cached) => {
+                cached.cached = true;
+                return cached;
+            }
+            // Redis 장애 시에는 Provider(외부 API)를 호출하지 않고 즉시 반환
+            CacheLookup::Unavailable => return Self::cache_unavailable_result(),
+            CacheLookup::Miss => {}
         }
 
         // 2. 서킷브레이커 상태 확인 (비소비형 — 여기서 probe를 "써버리지" 않음)
@@ -130,10 +217,11 @@ impl EnrichmentService {
         {
             // 3-1. Lock을 획득한 경우
             Ok(true) => {
-                // Lock을 획득한 사이 다른 요청이 캐시를 채웠을 가능성을 한 번 더 확인
-                if let Some(mut cached) = self.try_read_cache::<P::Output>(&cache_key).await {
-                    cached.cached = true;
+                // 처음 캐시를 확인한 뒤 Lock을 획득하기 전에 다른 요청이 캐시를 채웠을 가능성을 한 번 더 확인
+                let recheck = self.try_read_cache::<P::Output>(&cache_key).await;
 
+                if !matches!(recheck, CacheLookup::Miss) {
+                    // Hit 또는 Unavailable: provider를 호출하지 않으므로 락을 해제하고 반환
                     if let Err(err) = self.redis.unlock(&lock_key, &owner).await {
                         tracing::warn!(
                             provider = provider.name(),
@@ -143,10 +231,16 @@ impl EnrichmentService {
                         );
                     }
 
-                    return cached;
+                    return match recheck {
+                        CacheLookup::Hit(mut cached) => {
+                            cached.cached = true;
+                            cached
+                        }
+                        _ => Self::cache_unavailable_result(),
+                    };
                 }
 
-                // Lock 획득 성공 + 여전히 cache miss → 실제 API 호출
+                // Lock 획득 후 캐시를 다시 확인했지만 여전히 결과가 없음 → 실제 API 호출
                 let result = self
                     .call_and_store(provider, breaker, ioc, &cache_key)
                     .await;
@@ -166,22 +260,23 @@ impl EnrichmentService {
             // 3-2. Lock 획득 실패한 경우
             Ok(false) => {
                 // 다른 요청이 정상적으로 Lock을 보유 중이므로 해당 요청이 결과를 cache에 저장하기를 기다림
-                self.wait_for_result(&cache_key, provider, breaker, ioc)
-                    .await
+                // 제한 시간 안에 결과가 없으면 Provider를 직접 호출하지 않고 Timeout을 반환함
+                self.wait_for_result::<P::Output>(&cache_key).await
             }
 
             Err(err) => {
                 // Redis 자체 장애
-                // cache/lock은 최적화 계층이므로 외부 Provider 호출 자체는 계속함
+                // 이전에는 여기서 Provider를 직접 호출했는데, Redis 장애 시
+                // 모든 동시 요청이 외부 API로 폭주하는 원인이었음
+                // 캐시를 쓸 수 없는 상태에서는 Provider를 호출하지 않고 즉시 실패로 처리
                 tracing::warn!(
                     provider = provider.name(),
                     %ioc,
                     error = ?err,
-                    "Redis Lock 시도 실패, 직접 호출로 대체"
+                   "Redis Lock 시도 실패, 캐시 불가용으로 처리(Provider 호출 안 함)"
                 );
 
-                self.call_and_store(provider, breaker, ioc, &cache_key)
-                    .await
+                Self::cache_unavailable_result()
             }
         }
     }
@@ -189,12 +284,12 @@ impl EnrichmentService {
     async fn try_read_cache<T: DeserializeOwned>(
         &self,
         cache_key: &str,
-    ) -> Option<EnrichmentResult<T>> {
+    ) -> CacheLookup<EnrichmentResult<T>> {
         match self.redis.get(cache_key).await {
-            Ok(None) => None, // redis에 없는 경우 None 반환
+            Ok(None) => CacheLookup::Miss, // redis/dragonfly 에 없는 경우
 
             Ok(Some(json)) => match serde_json::from_str(&json) {
-                Ok(value) => Some(value),
+                Ok(value) => CacheLookup::Hit(value),
 
                 Err(err) => {
                     tracing::warn!(
@@ -202,17 +297,19 @@ impl EnrichmentService {
                         error = %err, // Display(사람이 읽기 좋은 문자열 형태)
                         "Cache 값 파싱 실패"
                     );
-                    None
+                    CacheLookup::Miss
                 }
             },
 
             Err(err) => {
+                // Redis 자체가 응답하지 않는 것을 Miss로 취급하면 동시 요청 전부가 외부 API로 폭주함
+                // 이를 막기 위해 Unavailable 처리
                 tracing::warn!(
                     %cache_key,
                     error = ?err, // {:?} 형태, 구조체 내부까지 다 보여줌
                     "Cache 조회 실패"
                 );
-                None
+                CacheLookup::Unavailable
             }
         }
     }
@@ -220,38 +317,32 @@ impl EnrichmentService {
     // 락을 얻지 못한 경우 다른 요청이 cache를 채우기를 잠시 기다림
     //
     // polling 중 cache가 채워지면 해당 결과를 반환하고,
-    // 제한 시간까지 결과가 없으면 breaker 상태를 다시 확인한 뒤 직접 Provider를 호출함
-    async fn wait_for_result<P: EnrichmentProvider>(
-        &self,
-        cache_key: &str,
-        provider: &P,
-        breaker: &CircuitBreaker,
-        ioc: &str,
-    ) -> EnrichmentResult<P::Output>
-    where
-        P::Output: Serialize + DeserializeOwned,
-    {
+    // 제한 시간까지 결과가 없으면 Provider를 직접 호출하지 않고 Timeout으로 반환함
+    // (이전에는 여기서 Provider를 직접 호출했는데, Lock 보유자가 실패하면 대기자 전체가 한꺼번에 호출해 외부 API가 폭주할 수 있었음)
+    async fn wait_for_result<T: DeserializeOwned>(&self, cache_key: &str) -> EnrichmentResult<T> {
         let attempts = LOCK_MAX_WAIT_MS / LOCK_POLL_INTERVAL_MS;
 
         for _ in 0..attempts {
             sleep(Duration::from_millis(LOCK_POLL_INTERVAL_MS)).await;
 
-            if let Some(mut cached) = self.try_read_cache::<P::Output>(cache_key).await {
-                cached.cached = true;
-                return cached;
+            match self.try_read_cache::<T>(cache_key).await {
+                CacheLookup::Hit(mut cached) => {
+                    cached.cached = true;
+                    return cached;
+                }
+                // 폴링 중 Redis 장애를 감지하면 3초를 다 기다리지 않고 즉시 반환
+                CacheLookup::Unavailable => return Self::cache_unavailable_result(),
+                CacheLookup::Miss => {}
             }
         }
 
-        // 기다리는 동안 다른 요청의 실패로 breaker가 Open 상태가 되었을 수 있음
-        // 직접 호출하기 전에 반드시 다시 확인
-        if !breaker.peek_allow_request() {
-            return self.breaker_open_result(provider);
+        // 제한 시간 초과: Lock 보유자의 결과가 캐시에 없음
+        // 대기자가 한꺼번에 Provider를 호출하면 폭주하므로 직접 호출하지 않고 Timeout으로 반환
+        EnrichmentResult {
+            status: EnrichmentStatus::Timeout,
+            data: None,
+            cached: false,
         }
-
-        // 제한 시간 초과
-        // 이 경우 중복 호출이 발생할 수 있지만,
-        // 결과를 무한정 기다리는 것보다 직접 조회하는 것을 선택
-        self.call_and_store(provider, breaker, ioc, cache_key).await
     }
 
     async fn call_and_store<P: EnrichmentProvider>(
@@ -362,6 +453,15 @@ impl EnrichmentService {
         }
     }
 
+    // Redis/Dragonfly 장애로 캐시를 확인할 수 없을 때 반환하는 결과
+    fn cache_unavailable_result<T>() -> EnrichmentResult<T> {
+        EnrichmentResult {
+            status: EnrichmentStatus::CacheUnavailable,
+            data: None,
+            cached: false,
+        }
+    }
+
     // RawEvent에서 존재하는 IOC만 병렬로 조회하고 Evidence로 취합
     pub async fn enrich_event(&self, event: RawEvent) -> Evidence {
         let iocs = event.enrichment_iocs();
@@ -393,5 +493,21 @@ impl EnrichmentService {
             enrichment_dst_domain,
             enrichment_file_sha256,
         }
+    }
+}
+
+// cargo test --lib enrichment::service
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 시나리오 1: 캐시 불가용 결과는 Provider 데이터 없이 CacheUnavailable 상태를 반환한다
+    #[test]
+    fn cache_unavailable_result_has_no_data() {
+        let result = EnrichmentService::cache_unavailable_result::<AbuseIpDbData>();
+
+        assert_eq!(result.status, EnrichmentStatus::CacheUnavailable);
+        assert!(result.data.is_none());
+        assert!(!result.cached);
     }
 }
