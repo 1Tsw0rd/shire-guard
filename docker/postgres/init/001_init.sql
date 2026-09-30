@@ -11,6 +11,7 @@ $$ LANGUAGE plpgsql;
 CREATE TABLE IF NOT EXISTS playbooks (
     id         BIGSERIAL PRIMARY KEY,          -- 플레이북 ID
     name       VARCHAR(100) NOT NULL,          -- 플레이북 이름
+    description VARCHAR(1000) NOT NULL DEFAULT '', -- 플레이북 설명
     enabled    BOOLEAN NOT NULL DEFAULT TRUE,  -- 활성 여부
     is_delete  BOOLEAN NOT NULL DEFAULT FALSE, -- 논리 삭제 여부
     nodes      JSONB NOT NULL CHECK (jsonb_typeof(nodes) = 'array'),
