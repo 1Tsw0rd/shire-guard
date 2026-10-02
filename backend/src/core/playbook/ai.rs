@@ -3,7 +3,7 @@ ai.rs: AI 대응 노드의 실행 담당
 - AI 대응 노드는 복잡한 판단이 필요한 소수 케이스에만 쓰이는 노드이고, Ollama 응답이 느려 캐싱을 사용함
 
 이 파일이 하는 일
-- 캐시 키 생성: sha256(model + prompt + Evidence, event_id/timestamp 제외)
+- 캐시 키 생성: sha256(model + prompt + Evidence, event_id/timestamp/ingested_at 제외)
 - Redis/Dragonfly 조회 → 있으면 그대로 반환
 - 없으면 Ollama(/api/chat)를 호출해서 risk/reason을 받아옴
 - 성공(success) 결과만 Redis/Dragonfly에 TTL 7일로 저장 (에러는 저장하지 않음: 일시 장애가 TTL 동안 고정되는 것을 막기 위함)
@@ -344,7 +344,7 @@ impl AiClient {
         // 이 시간 안에 다시 요청이 오면 모델 로드(콜드 스타트)를 건너뜀
         const OLLAMA_KEEP_ALIVE: &str = "30m";
 
-        // 캐시 키와 같은 입력(event_id/timestamp 제외)을 전송함
+        // 캐시 키와 같은 입력(event_id/timestamp/ingested_at 제외)을 전송함
         let evidence_json = match evidence_input(evidence) {
             Ok(s) => s,
             Err(e) => {
@@ -427,15 +427,16 @@ impl AiClient {
     }
 }
 
-// Evidence를 JSON 문자열로 변환하되 event_id/timestamp는 제외
+// Evidence를 JSON 문자열로 변환하되 event_id/timestamp/ingested_at은 제외
 // 캐시 키 계산과 Ollama 전송이 같은 입력을 쓰도록 하는 공용 함수
-// 제외하는 이유: 이 둘은 이벤트마다 항상 달라서 넣으면 캐시가 절대 히트하지 않고, AI 판정에도 필요하지 않음
+// 제외하는 이유: 이 셋은 이벤트마다 항상 달라서 넣으면 캐시가 절대 히트하지 않고, AI 판정에도 필요하지 않음
 fn evidence_input(evidence: &Evidence) -> Result<String, serde_json::Error> {
     let mut value = serde_json::to_value(evidence)?;
     if let Some(obj) = value.as_object_mut() {
         // value가 Object라면 수정할 수 있는 상태로 빌림
         obj.remove("event_id");
         obj.remove("timestamp");
+        obj.remove("ingested_at");
     }
 
     // serde_json 기본(=preserve_order 미사용) 상태에서는 객체 키가 알파벳 순으로 정렬되어 직렬화되므로
@@ -443,7 +444,7 @@ fn evidence_input(evidence: &Evidence) -> Result<String, serde_json::Error> {
     serde_json::to_string(&value)
 }
 
-// 캐시 키 생성: sha256(model + prompt + Evidence, event_id/timestamp 제외)
+// 캐시 키 생성: sha256(model + prompt + Evidence, event_id/timestamp/ingested_at 제외)
 fn cache_key(
     model: AiModel,
     prompt: &str,
@@ -589,7 +590,7 @@ mod tests {
         assert_eq!(value["error"], "timeout");
     }
 
-    // 시나리오 9: event_id/timestamp를 제외한 Evidence 내용이 다르면 캐시 키도 달라야 한다
+    // 시나리오 9: event_id/timestamp/ingested_at을 제외한 Evidence 내용이 다르면 캐시 키도 달라야 한다
     #[test]
     fn cache_key_differs_by_evidence_content() {
         let e1 = sample_evidence("evt-1", "2026-09-26T10:00:00Z"); // file_name: "invoice.exe"
@@ -617,7 +618,37 @@ mod tests {
         assert_ne!(k1, k2);
     }
 
-    // 시나리오 10: CacheUnavailable이 문서 형식(snake_case)으로 직렬화된다
+    // 시나리오 10: ingested_at만 다르면 캐시 키는 같아야 한다
+    // (수신 Vector가 이벤트마다 다른 수집 시각을 넣으므로, 제외하지 않으면 AI 캐시가 히트하지 않음)
+    #[test]
+    fn cache_key_ignores_ingested_at() {
+        let make = |ingested_at: &str| -> Evidence {
+            let event: RawEvent = serde_json::from_str(&format!(
+                r#"{{
+                    "event_id": "evt-1",
+                    "event_type": "file_download",
+                    "timestamp": "2026-09-26T10:00:00Z",
+                    "ingested_at": "{ingested_at}",
+                    "src_ip": "1.2.3.4"
+                }}"#
+            ))
+            .expect("테스트 이벤트 파싱 실패");
+
+            Evidence {
+                event,
+                enrichment_src_ip: None,
+                enrichment_dst_domain: None,
+                enrichment_file_sha256: None,
+            }
+        };
+
+        let k1 = cache_key(AiModel::Qwen25Instruct14b, "분석하라", &make("2026-10-01T10:00:00.123456789Z")).unwrap();
+        let k2 = cache_key(AiModel::Qwen25Instruct14b, "분석하라", &make("2026-10-02T23:59:59.000000001Z")).unwrap();
+
+        assert_eq!(k1, k2);
+    }
+
+    // 시나리오 11: CacheUnavailable이 문서 형식(snake_case)으로 직렬화된다
     #[test]
     fn cache_unavailable_error_serializes_as_snake_case() {
         let error = AiResult::Error {
@@ -629,7 +660,7 @@ mod tests {
         assert_eq!(value["error"], "cache_unavailable");
     }
 
-    // 시나리오 11: guard가 drop되면 자기 cell을 in_flight 맵에서 제거한다
+    // 시나리오 12: guard가 drop되면 자기 cell을 in_flight 맵에서 제거한다
     #[test]
     fn guard_removes_own_entry_on_drop() {
         let map: Arc<InFlightMap> = Arc::new(Mutex::new(HashMap::new()));
@@ -649,7 +680,7 @@ mod tests {
         assert!(map.lock().unwrap().is_empty());
     }
 
-    // 시나리오 12: 같은 키로 새로 만들어진 다른 cell은 guard가 지우지 않는다
+    // 시나리오 13: 같은 키로 새로 만들어진 다른 cell은 guard가 지우지 않는다
     #[test]
     fn guard_does_not_remove_newer_cell_with_same_key() {
         let map: Arc<InFlightMap> = Arc::new(Mutex::new(HashMap::new()));

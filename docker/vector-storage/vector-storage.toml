@@ -1,0 +1,109 @@
+# ── API: healthcheck 및 파이프라인 상태 조회용 엔드포인트 ──────────
+[api]
+enabled = true
+address = "0.0.0.0:${VECTOR_STORAGE_API_PORT}"
+
+# ── Sources: Rust 백엔드가 처리한 최종 로그를 받음 ──────────────────
+[sources.from_backend]
+type = "http_server"
+address = "0.0.0.0:${VECTOR_STORAGE_PORT}"
+
+[sources.from_backend.decoding]
+codec = "json"
+
+# Rust가 요청 1번에 여러 건을 보내므로, 한 줄(JSON 문서 1개)을 이벤트 1개로 나눔
+[sources.from_backend.framing]
+method = "newline_delimited"
+
+# ── Transforms ──────────────────────────────────────────────────────
+# OpenSearch용: 인덱스 날짜(event-logs-YYYY.MM.DD)를 ingested_at 기준으로 계산
+[transforms.to_opensearch]
+type = "remap"
+inputs = ["from_backend"]
+source = '''
+del(.path)          # .path: HTTP 요청 경로를 나타내는 Vector source 메타데이터
+del(.source_type)   # .source_type: 이벤트를 생성한 Vector source 종류를 나타내는 메타데이터
+
+# .index_date: OpenSearch 인덱스 이름을 결정하기 위해 사용하는 임시 이벤트 필드로 
+# 아래 [sinks.opensearch_out] > bulk.index에서 사용됨
+#
+# parse_timestamp(): 문자열(String) 형태의 시간을 Vector의 timestamp 타입으로 변환
+# 입력:  "2026-10-01T12:34:56.789Z"
+# 출력:  timestamp(2026-10-01T12:34:56.789Z)
+#
+# format_timestamp!(): timestamp 타입을 지정한 형식의 문자열(String)로 변환
+# 입력:  timestamp(2026-10-01T12:34:56.789Z)
+# 출력:  "2026.10.01" (String)
+.index_date = format_timestamp!(parse_timestamp!(.ingested_at, format: "%+"), format: "%Y.%m.%d", timezone: "UTC")
+'''
+
+# ClickHouse용: event_logs 테이블 컬럼에 맞게 변환
+[transforms.to_clickhouse]
+type = "remap"
+inputs = ["from_backend"]
+source = '''
+del(.path)
+del(.source_type)
+. = {
+  "event_id": .event_id,
+  "event_type": .event_type,
+  "timestamp": .timestamp,
+  "ingested_at": .ingested_at,
+  "playbook_action": .playbook_result.action,
+  "payload": .
+}
+'''
+
+# ── Sinks ───────────────────────────────────────────────────────────
+# opensearch
+[sinks.opensearch_out]
+type = "elasticsearch"
+inputs = ["to_opensearch"]                    # transform 결과를 받음
+endpoints = ["http://opensearch:9200"]
+mode = "bulk"
+api_version = "v7"
+bulk.index = "event-logs-{{ index_date }}"
+encoding.except_fields = ["index_date"]   # 인덱스 날짜 계산용 필드는 저장하지 않음
+
+# clickhouse
+[sinks.clickhouse_out]
+type = "clickhouse"
+inputs = ["to_clickhouse"]
+endpoint = "http://clickhouse:8123"
+database = "${CLICKHOUSE_DB}"
+table = "event_logs"
+auth.strategy = "basic"
+auth.user = "${CLICKHOUSE_USER}"
+auth.password = "${CLICKHOUSE_PASSWORD}"
+
+
+# ── Sink 버퍼 및 저장 확인 ──────────────────────────────────────────
+# 저장소 장애 시 디스크 버퍼에 보관하고 복구 후 전송
+# when_full = block: 버퍼가 차면 버리지 않고 대기 → Rust가 응답을 못 받아 Kafka 오프셋을 진행하지 않음 → 원본은 Kafka에 남음
+# (vector.toml의 테스트 예시로 사용했던 drop_newest를 쓰면 이벤트가 유실될 수 있음)
+# acknowledgements: 두 저장소의 디스크 버퍼에 저장된 뒤에만 Rust에 200 응답
+[sinks.opensearch_out.buffer]
+type = "disk"
+max_size = 1073741824   # 1GiB
+when_full = "block"
+
+[sinks.opensearch_out.acknowledgements]
+enabled = true
+
+[sinks.clickhouse_out.buffer]
+type = "disk"
+max_size = 1073741824
+when_full = "block"
+
+[sinks.clickhouse_out.acknowledgements]
+enabled = true
+
+
+# ── 내부 메트릭 (Prometheus 수집용) ─────────────────────────────────
+[sources.internal_metrics]
+type = "internal_metrics"
+
+[sinks.prometheus_out]
+type = "prometheus_exporter"
+inputs = ["internal_metrics"]
+address = "0.0.0.0:9598"

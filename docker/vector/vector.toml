@@ -20,6 +20,8 @@ codec = "json"
 type = "remap"
 inputs = ["http_in"]
 source = '''
+.ingested_at = now()   # 수집 시각: shire-guard에 이벤트가 처음 들어온 시각
+
 if !exists(.event_type) {
   .event_type = "unknown"
 }
@@ -83,7 +85,7 @@ encoding.codec = "json"
 #"acks" = "1"
 
 # ── 비활성화된 싱크 (opensearch_out, clickhouse_out) ──
-# Vector 직접 저장은 테스트용이었음. 저장은 이제 백엔드가 Playbook 처리 후 담당
+# Vector 직접 저장은 테스트용이었음. 저장은 이제 vector-storage가 담당 (백엔드가 Playbook 처리 후 전송)
 # 다시 켜려면 clickhouse_out의 security_events table이 필요함(docker/clickhouse/init/001_init.sql 참고)
 
 # opensearch 전용

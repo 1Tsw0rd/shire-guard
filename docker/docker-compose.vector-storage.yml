@@ -1,0 +1,32 @@
+# docker compose -f docker-compose.yml -f docker-compose.vector-storage.yml up -d vector-storage
+# Rust가 이벤트 로그를 받아 OpenSearch/ClickHouse에 저장하는 전용 Vector
+# 이벤트를 받아 Kafka로 보내는 vector(docker-compose.vector.yml)와 역할을 분리함
+services:
+  vector-storage:
+    image: timberio/vector:latest-alpine
+    container_name: vector-storage
+    restart: unless-stopped
+    ports:
+      - "${VECTOR_STORAGE_PORT}:${VECTOR_STORAGE_PORT}"          # Rust가 최종 로그를 보내는 포트
+      - "${VECTOR_STORAGE_API_PORT}:${VECTOR_STORAGE_API_PORT}"  # API/healthcheck 포트
+      - "${VECTOR_STORAGE_METRICS_PORT:?VECTOR_STORAGE_METRICS_PORT가 설정되지 않았습니다}:9598"  # Prometheus 지표
+    environment:
+      - VECTOR_STORAGE_PORT=${VECTOR_STORAGE_PORT:?VECTOR_STORAGE_PORT가 설정되지 않았습니다}
+      - VECTOR_STORAGE_API_PORT=${VECTOR_STORAGE_API_PORT:?VECTOR_STORAGE_API_PORT가 설정되지 않았습니다}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      # Vector config 내 ${VAR} interpolation 허용
+      - VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION=true
+    volumes:
+      - ./vector-storage/vector-storage.toml:/etc/vector/vector.toml:ro  # 저장 전용 설정 파일
+      - ./vector-storage/data:/var/lib/vector  # 디스크 버퍼 (컨테이너 재시작 후에도 미전송 로그 유지)
+    command: ["--config", "/etc/vector/vector.toml"]
+    healthcheck:
+      # $$는 컨테이너 안의 환경변수를 쓰겠다는 의미 (compose가 치환하지 않음)
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 -O - http://127.0.0.1:$${VECTOR_STORAGE_API_PORT}/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shire-net

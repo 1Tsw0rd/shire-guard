@@ -30,6 +30,9 @@ RAW EVENT
    │      └─ AI 분석
    │
    ▼
+vector-storage (디스크 버퍼)
+   │
+   ▼
 OpenSearch + ClickHouse
 ```
 
@@ -166,8 +169,8 @@ PUT _index_template/event-logs
         "file_sha256":     { "type": "keyword", "ignore_above": 1024 }, // 파일 SHA-256
         "file_size_bytes": { "type": "long" },                           // 파일 크기(byte)
 
-        // ── 백엔드가 찍는 값 ──
-        "ingested_at":     { "type": "date" },                           // 백엔드 처리 시작 시각
+        // ── 시스템이 찍는 값 ──
+        "ingested_at":     { "type": "date" },                              // 수집 시각 (수신 Vector가 기록)
 
         // ── enrichment (나머지 필드는 동적 매핑) ──
         "enrichment_dst_domain": { "properties": { "data": { "properties": {
@@ -205,15 +208,15 @@ PUT _index_template/event-logs
 ### clickhouse
 ```sql
 CREATE TABLE IF NOT EXISTS shire.event_logs (
-    event_id         String,                            -- 이벤트 ID (클릭하우스는 일반 RDBMS와 다르므로 별도 id 컬럼 사용 안함)
+    event_id         String,                            -- 이벤트 ID (같은 이벤트의 로그가 여러 건일 수 있음)
     event_type       LowCardinality(String),            -- 이벤트 종류 (file_download 등)
-    event_time       DateTime64(3, 'UTC'),              -- 이벤트 발생 시각 (timestamp 파싱값)
-    ingested_at      DateTime64(3, 'UTC'),              -- 백엔드 처리 시작 시각 (OpenSearch의 ingested_at과 같은 값)
-    playbook_action  LowCardinality(Nullable(String)),  -- 플레이북 최종 결정: DENY / DETECT / HOLD (결정한 플레이북이 없으면 NULL)
-    payload          JSON                               -- 원본 + enrichment + playbook_result 전체 (OpenSearch 문서와 동일)
-) ENGINE = MergeTree
-PARTITION BY toYYYYMM(event_time)                        -- 월 단위 파티션
-ORDER BY (event_type, event_time, event_id);             -- 정렬 키
+    timestamp        DateTime64(3, 'UTC'),              -- 이벤트 발생 시각 (이벤트 발신 측 기준 시각)
+    ingested_at      DateTime64(3, 'UTC'),              -- 수집 시각 (수신 Vector가 기록한 시각)
+    playbook_action  LowCardinality(Nullable(String)),  -- 플레이북 최종 결정: DENY / DETECT / HOLD (플레이북 처리가 없으면 NULL)
+    payload          JSON                               -- 원본 + enrichment + playbook_result 전체
+) ENGINE = MergeTree                                    -- 로그는 계속 쌓음 (중복 제거 안 함)
+PARTITION BY toYYYYMM(ingested_at)                      -- 월 단위 파티션 (OpenSearch 인덱스와 같은 수집 시각 기준)
+ORDER BY (ingested_at, event_id);                       -- 정렬 키 (날짜 범위 조회가 많으므로 ingested_at을 포함시킴)
 ```
 
 
@@ -237,11 +240,13 @@ ORDER BY (event_type, event_time, event_id);             -- 정렬 키
   - Redis/Dragonfly 조회 장애면 Ollama를 호출하지 않고 cache_unavailable 에러 반환
   - 없으면 Ollama 호출 (캐시 키가 같은 요청은 1번만 호출, 동시 호출 1개로 제한) 후 정상 응답만 7일 저장
   - 요청 하나의 전체 시간 상한 60초, 초과 시 timeout 에러
-  - 키: `sha256(model + prompt + Evidence(원본 + enrichment 결과), event_id·timestamp 제외)`
+  - 키: `sha256(model + prompt + Evidence(원본 + enrichment 결과), event_id·timestamp·ingested_at 제외)`
 
 ### 4) 최종적으로 OpenSearch와 ClickHouse에 저장되는 로그
 - 결정한 플레이북이 없는 경우: 원본 로그
 - 결정한 플레이북이 1개 이상인 경우: 원본 로그 + `playbook_result`
+- 저장 경로: 백엔드 → vector-storage(저장 전용 Vector) → OpenSearch / ClickHouse
+- 같은 이벤트도 로그는 계속 쌓음 (중복 제거 안 함, `ingested_at`으로 구분)
 
 ### 5) 플레이북 API
 - 신규 생성 → Postgres insert → 캐시 갱신(refresh)
@@ -327,7 +332,7 @@ ORDER BY (event_type, event_time, event_id);             -- 정렬 키
   - AI 에러 발생 시 매핑과 무관하게 HOLD 처리
   - 매핑값: DENY | HOLD | DETECT
 
-- 입력: prompt는 system 메시지로, Evidence(원본 + enrichment, event_id·timestamp 제외)는 user 메시지로 전달 (분석 지침과 분석 대상 데이터를 구분)
+- 입력: prompt는 system 메시지로, Evidence(원본 + enrichment, event_id·timestamp·ingested_at 제외)는 user 메시지로 전달
 - temperature 0 적용 (같은 입력에는 같은 답이 나오도록 함)
 - model은 호출할 모델(AiModel enum, 허용 목록 2개)을 지정하는 값임
 - actions 매핑은 모델에 전달하지 않음

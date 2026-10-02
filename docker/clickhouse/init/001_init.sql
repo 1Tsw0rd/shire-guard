@@ -11,12 +11,12 @@
 
 -- 테이블 생성
 CREATE TABLE IF NOT EXISTS shire.event_logs (
-    event_id         String,                            -- 이벤트 ID (클릭하우스는 일반 RDBMS와 다르므로 별도 id 컬럼 사용 안함)
+    event_id         String,                            -- 이벤트 ID (같은 이벤트의 로그가 여러 건일 수 있음)
     event_type       LowCardinality(String),            -- 이벤트 종류 (file_download 등)
-    event_time       DateTime64(3, 'UTC'),              -- 이벤트 발생 시각 (timestamp 파싱값)
-    ingested_at      DateTime64(3, 'UTC'),              -- 백엔드 처리 시작 시각 (OpenSearch의 ingested_at과 같은 값)
-    playbook_action  LowCardinality(Nullable(String)),  -- 플레이북 최종 결정: DENY / DETECT / HOLD (결정한 플레이북이 없으면 NULL)
+    timestamp        DateTime64(3, 'UTC'),              -- 이벤트 발생 시각 (이벤트 발신 측 기준 시각)
+    ingested_at      DateTime64(3, 'UTC'),              -- 수집 시각 (수신 Vector가 기록한 시각) 
+    playbook_action  LowCardinality(Nullable(String)),  -- 플레이북 최종 결정: DENY / DETECT / HOLD (플레이북 처리가 없으면 NULL)
     payload          JSON                               -- 원본 + enrichment + playbook_result 전체 (OpenSearch 문서와 동일)
-) ENGINE = MergeTree
-PARTITION BY toYYYYMM(event_time)                        -- 월 단위 파티션
-ORDER BY (event_type, event_time, event_id);             -- 정렬 키
+) ENGINE = MergeTree                                    -- 로그는 계속 쌓음 (중복 제거 안 함)
+PARTITION BY toYYYYMM(ingested_at)                      -- 월 단위 파티션 (OpenSearch 인덱스와 같은 수집 시각 기준)
+ORDER BY (ingested_at, event_id);                       -- 정렬 키 (날짜 범위 조회가 많으므로 ingested_at을 포함시킴)
