@@ -16,14 +16,27 @@ codec = "json"
 method = "newline_delimited"
 
 # ── Transforms ──────────────────────────────────────────────────────
-# OpenSearch용: 인덱스 날짜(event-logs-YYYY.MM.DD)를 ingested_at 기준으로 계산
-[transforms.to_opensearch]
+# 공통: Vector 메타데이터 제거, 중복 관리용 log_id 생성
+# log_id = sha256(event_id + 구분자 + ingested_at)
+# - Rust가 장애 후 같은 Kafka 메시지를 다시 처리해도 event_id, ingested_at은 같으므로 같은 log_id가 나옴
+# - 새로 들어온 이벤트는 event_id가 같아도 ingested_at이 다르므로 다른 log_id (이력 유지)
+# - "|" 구분자: event_id와 ingested_at의 경계를 명확하게 구분
+#   (ingested_at은 수신 Vector가 고정 형식으로 기록해 "|"가 들어갈 수 없으므로, 마지막 "|" 기준으로 항상 구분됨)
+[transforms.prepare]
 type = "remap"
 inputs = ["from_backend"]
 source = '''
 del(.path)          # .path: HTTP 요청 경로를 나타내는 Vector source 메타데이터
 del(.source_type)   # .source_type: 이벤트를 생성한 Vector source 종류를 나타내는 메타데이터
+.log_id = sha2(string!(.event_id) + "|" + string!(.ingested_at), variant: "SHA-256")
+'''
 
+
+# OpenSearch용: 인덱스 날짜(event-logs-YYYY.MM.DD)를 ingested_at 기준으로 계산
+[transforms.to_opensearch]
+type = "remap"
+inputs = ["prepare"]
+source = '''
 # .index_date: OpenSearch 인덱스 이름을 결정하기 위해 사용하는 임시 이벤트 필드로 
 # 아래 [sinks.opensearch_out] > bulk.index에서 사용됨
 #
@@ -40,18 +53,11 @@ del(.source_type)   # .source_type: 이벤트를 생성한 Vector source 종류�
 # ClickHouse용: event_logs 테이블 컬럼에 맞게 변환
 [transforms.to_clickhouse]
 type = "remap"
-inputs = ["from_backend"]
+inputs = ["prepare"]
 source = '''
-del(.path)
-del(.source_type)
-. = {
-  "event_id": .event_id,
-  "event_type": .event_type,
-  "timestamp": .timestamp,
-  "ingested_at": .ingested_at,
-  "playbook_action": .playbook_result.action,
-  "payload": .
-}
+log_id = .log_id
+del(.log_id)
+. = { "log_id": log_id, "payload": . }
 '''
 
 # ── Sinks ───────────────────────────────────────────────────────────
@@ -63,6 +69,7 @@ endpoints = ["http://opensearch:9200"]
 mode = "bulk"
 api_version = "v7"
 bulk.index = "event-logs-{{ index_date }}"
+id_key = "log_id"                         # _id = log_id → 같은 로그가 다시 오면 덮어씀 (중복 제거)
 encoding.except_fields = ["index_date"]   # 인덱스 날짜 계산용 필드는 저장하지 않음
 
 # clickhouse
