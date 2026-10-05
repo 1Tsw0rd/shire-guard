@@ -10,7 +10,7 @@ services:
     environment:
       - discovery.type=single-node        # 단일 노드 모드 (클러스터 아님)
       - plugins.security.disabled=true    # 로컬 개발용, 인증/TLS 비활성화
-      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"  # JVM 힙 메모리 제한 (로컬 리소스 절약)
+      - OPENSEARCH_JAVA_OPTS=-Xms4g -Xmx4g  # JVM 힙 메모리 제한 (샤드 4, 4GB에서 10만/s 이상 측정함)
       - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:?OPENSEARCH_INITIAL_ADMIN_PASSWORD가 설정되지 않았습니다} # 초기 admin 비밀번호(docker/.env 참조)
     volumes:
       - ./opensearch/data:/usr/share/opensearch/data

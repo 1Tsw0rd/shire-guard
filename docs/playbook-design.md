@@ -148,9 +148,10 @@ PUT _index_template/event-logs
                                         // 문서 _id = log_id (sha256(event_id|ingested_at)) 값이 저장됨, 중복 로그가 PUT 되면 덮어씀
   "template": {
     "settings": {
-      "number_of_shards": 1,
-      "number_of_replicas": 0,          // 단일 노드
-      "index.mapping.ignore_malformed": true  // 숫자·날짜·IP 타입이 안 맞아도 문서를 거부하지 않고 그 필드만 인덱싱 제외(이 설정이 없으면 타입 맞지 않는 필드가 있는 경우 해당 로그 하나를 통째로 날리게 됨)
+      "number_of_shards": 4,           // 성능 테스트 결과 초당 10만 insert 성능을 보여준 최소 설정값  
+      "number_of_replicas": 0,          // 단일 노드이므로 0 세팅
+      "index.mapping.ignore_malformed": true,  // 숫자·날짜·IP 타입이 안 맞아도 문서를 거부하지 않고 그 필드만 인덱싱 제외(이 설정이 없으면 타입 맞지 않는 필드가 있는 경우 해당 로그 하나를 통째로 날리게 됨)
+       "refresh_interval": "30s" // 새 문서를 검색할 수 있게 만드는 주기를 기본값 1s → 30s로 늘려, 문서 저장 성능 향상
     },
     "mappings": {
       "dynamic_templates": [
