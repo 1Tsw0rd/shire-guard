@@ -58,12 +58,12 @@ topic = "${KAFKA_TOPIC}"
 encoding.codec = "json"
 
 # redpanda 전용 (Kafka 프로토콜 호환 브로커, 테스트용)
-[sinks.redpanda_out]
-type = "kafka"
-inputs = ["normalize"]
-bootstrap_servers = "redpanda:9092"
-topic = "${KAFKA_TOPIC}"
-encoding.codec = "json"
+#[sinks.redpanda_out]
+#type = "kafka"
+#inputs = ["normalize"]
+#bootstrap_servers = "redpanda:9092"
+#topic = "${KAFKA_TOPIC}"
+#encoding.codec = "json"
 
 # ── Kafka Producer 성능 튜닝 옵션 ─────────────────────────
 # 2026-09-14 실측: batching 튜닝(linger.ms/batch.size/compression) + acks/idempotence 조합으로
@@ -118,7 +118,29 @@ type = "prometheus_exporter"
 inputs = ["internal_metrics"]
 address = "0.0.0.0:9598"
 
-# ── Sink Buffer 정책 및 테스트 ──────────────────────────────────────────────
+# ── Sink Buffer 설정  ──────────────────────────────────────────────────
+# block + ack를 함께 쓰는 이유: 이벤트를 버리지 않고, Kafka 저장이 확인된 것만 성공으로 응답 → 유실 방지
+# - block: 버퍼가 가득 차면 새 이벤트를 받지 않고 기다림 (버리지 않음)
+# - ack:   Kafka가 실제로 저장한 뒤에만 보낸 쪽에 200 응답 (저장 실패 시 이벤트를 보낸 쪽에 에러 응답하여 재시도하게 유도)
+
+[sinks.kafka_out.buffer]
+type = "memory"
+max_events = 10000
+when_full = "block"
+
+[sinks.kafka_out.acknowledgements]
+enabled = true
+
+#[sinks.redpanda_out.buffer]
+#type = "memory"
+#max_events = 10000
+#when_full = "block"
+
+#[sinks.redpanda_out.acknowledgements]
+#enabled = true
+
+###########################################################################################################################################################################
+# ── (테스트 기록으로 모두 비활성화 처리)Sink Buffer 정책 및 테스트 기록: sink 4종류 동시 활성화(kafka/redpanda/opensearch/clickhouse) ──────────────────────────────────────────────
 # Opensearch/Clickhouse Sink 장애 격리용 disk buffer
 # Sink 장애 또는 서비스 종료 된 경우 vector로 유입되는 이벤트가 각 Sink 버퍼에 쌓일 수 있음
 # Sink 버퍼 하나가 가득 차고, when_full=block 설정(Default block)인 경우
@@ -152,12 +174,13 @@ address = "0.0.0.0:9598"
 #max_size = 1073741824
 #when_full = "drop_newest"
 
-[sinks.kafka_out.buffer]
-type = "memory"
-max_events = 10000   # 1만개 event가 쌓일 경우
-when_full = "drop_newest" # 새로  새로 들어오는 event들은 버림, memory 타입 버퍼는 쓰이지 않은 이벤트는 바로바로 버림
+#[sinks.kafka_out.buffer]
+#type = "memory"
+#max_events = 10000   # 1만개 event가 쌓일 경우
+#when_full = "drop_newest" # 새로  새로 들어오는 event들은 버림, memory 타입 버퍼는 쓰이지 않은 이벤트는 바로바로 버림
 
-[sinks.redpanda_out.buffer]
-type = "memory"
-max_events = 10000
-when_full = "drop_newest"
+#[sinks.redpanda_out.buffer]
+#type = "memory"
+#max_events = 10000
+#when_full = "drop_newest"
+###########################################################################################################################################################################
