@@ -113,6 +113,9 @@ impl PlaybookEngine {
             return None;
         }
 
+        // 병렬 평가라 완료 순서가 매번 다르므로, 일관되게 보이도록 playbook_id 순으로 정렬
+        decisions.sort_unstable_by_key(|d| d.playbook_id);
+
         let action = majority_vote(&decisions);
         Some(PlaybookResult {
             action,
