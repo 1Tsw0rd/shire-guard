@@ -25,6 +25,8 @@ pub struct Metrics {
     pub consumer_events_failed: IntCounter,
     pub consumer_broker_connected: IntGauge,
     pub cache_key_count: IntGauge,
+    pub storage_events_sent: IntCounter,
+    pub storage_retries: IntCounter,
 }
 
 impl Metrics {
@@ -109,6 +111,25 @@ impl Metrics {
             AppError::Internal(format!("shireguard_config_active_cache 생성 실패: {e}"))
         })?;
 
+        // 저장(vector-storage) 관련 지표
+        let storage_events_sent = IntCounter::new(
+            "shireguard_storage_events_sent_total",
+            "vector-storage가 저장 완료(200)를 응답한 로그 수",
+        )
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "shireguard_storage_events_sent_total 생성 실패: {e}"
+            ))
+        })?;
+
+        let storage_retries = IntCounter::new(
+            "shireguard_storage_retries_total",
+            "vector-storage 전송 실패(5xx, 연결 실패)로 재시도한 횟수 (묶음 단위)",
+        )
+        .map_err(|e| {
+            AppError::Internal(format!("shireguard_storage_retries_total 생성 실패: {e}"))
+        })?;
+
         let broker_label = match broker_config.broker {
             MessageBroker::Kafka => "kafka",
             MessageBroker::RedPanda => "redpanda",
@@ -161,6 +182,12 @@ impl Metrics {
         registry
             .register(Box::new(config_active_cache))
             .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(storage_events_sent.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(storage_retries.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
 
         Ok(Self {
             registry,
@@ -169,6 +196,8 @@ impl Metrics {
             consumer_events_failed,
             consumer_broker_connected,
             cache_key_count,
+            storage_events_sent,
+            storage_retries,
         })
     }
 

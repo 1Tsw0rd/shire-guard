@@ -38,7 +38,7 @@ type = "remap"
 inputs = ["prepare"]
 source = '''
 # .index_date: OpenSearch 인덱스 이름을 결정하기 위해 사용하는 임시 이벤트 필드로 
-# 아래 [sinks.opensearch_out] > bulk.index에서 사용됨
+# 아래 [sinks.opensearch_out_0~3] > bulk.index에서 사용됨
 #
 # parse_timestamp(): 문자열(String) 형태의 시간을 Vector의 timestamp 타입으로 변환
 # 입력:  "2026-10-01T12:34:56.789Z"
@@ -48,7 +48,18 @@ source = '''
 # 입력:  timestamp(2026-10-01T12:34:56.789Z)
 # 출력:  "2026.10.01" (String)
 .index_date = format_timestamp!(parse_timestamp!(.ingested_at, format: "%+"), format: "%Y.%m.%d", timezone: "UTC")
+# OpenSearch sink 분할 번호(0~3): log_id 앞 2자리(16진수)를 4로 나눈 나머지 → 4개 sink에 고르게 분배
+.os_part = mod(parse_int!(slice!(.log_id, start: 0, end: 2), base: 16), 4)
 '''
+
+# OpenSearch sink 4개로 나눔 (요청 생성을 병렬화, 이벤트는 4개 중 하나로만 감)
+[transforms.os_route]
+type = "route"
+inputs = ["to_opensearch"]
+route.p0 = '.os_part == 0'
+route.p1 = '.os_part == 1'
+route.p2 = '.os_part == 2'
+route.p3 = '.os_part == 3'
 
 # ClickHouse용: event_logs 테이블 컬럼에 맞게 변환
 [transforms.to_clickhouse]
@@ -61,16 +72,78 @@ del(.log_id)
 '''
 
 # ── Sinks ───────────────────────────────────────────────────────────
+# opensearch (sink 4개로 분할)
+# sink 1개일 때 배치가 약 4,200건에 머물고 동시 요청 16 중 약 5개만 사용 → OpenSearch 경로가 약 4.3만/s에서 막힘
+# 4개로 나눠 요청 생성을 병렬화 → 전체 약 3.4만 → 4.4만/s (대신 vector-storage CPU 최대 약 16코어 사용)
+
 # opensearch
-[sinks.opensearch_out]
+[sinks.opensearch_out_0]
 type = "elasticsearch"
-inputs = ["to_opensearch"]                    # transform 결과를 받음
+inputs = ["os_route.p0"]                             # transform 결과를 받음
 endpoints = ["http://opensearch:9200"]
 mode = "bulk"
 api_version = "v7"
 bulk.index = "event-logs-{{ index_date }}"
-id_key = "log_id"                         # _id = log_id → 같은 로그가 다시 오면 덮어씀 (중복 제거)
-encoding.except_fields = ["index_date"]   # 인덱스 날짜 계산용 필드는 저장하지 않음
+id_key = "log_id"                                    # _id = log_id → 같은 로그가 다시 오면 덮어씀 (중복 제거)
+encoding.except_fields = ["index_date", "os_part"]   # 인덱스 날짜 계산용 필드와 분할 번호도 저장하지 않음
+batch.max_events = 10000
+batch.max_bytes = 60000000
+request.concurrency = 8
+buffer.type = "memory"
+buffer.max_events = 100000
+buffer.when_full = "block"
+acknowledgements.enabled = true
+
+[sinks.opensearch_out_1]
+type = "elasticsearch"
+inputs = ["os_route.p1"]
+endpoints = ["http://opensearch:9200"]
+mode = "bulk"
+api_version = "v7"
+bulk.index = "event-logs-{{ index_date }}"
+id_key = "log_id"
+encoding.except_fields = ["index_date", "os_part"]
+batch.max_events = 10000
+batch.max_bytes = 60000000
+request.concurrency = 8
+buffer.type = "memory"
+buffer.max_events = 100000
+buffer.when_full = "block"
+acknowledgements.enabled = true
+
+[sinks.opensearch_out_2]
+type = "elasticsearch"
+inputs = ["os_route.p2"]
+endpoints = ["http://opensearch:9200"]
+mode = "bulk"
+api_version = "v7"
+bulk.index = "event-logs-{{ index_date }}"
+id_key = "log_id"
+encoding.except_fields = ["index_date", "os_part"]
+batch.max_events = 10000
+batch.max_bytes = 60000000
+request.concurrency = 8
+buffer.type = "memory"
+buffer.max_events = 100000
+buffer.when_full = "block"
+acknowledgements.enabled = true
+
+[sinks.opensearch_out_3]
+type = "elasticsearch"
+inputs = ["os_route.p3"]
+endpoints = ["http://opensearch:9200"]
+mode = "bulk"
+api_version = "v7"
+bulk.index = "event-logs-{{ index_date }}"
+id_key = "log_id"
+encoding.except_fields = ["index_date", "os_part"]
+batch.max_events = 10000
+batch.max_bytes = 60000000
+request.concurrency = 8
+buffer.type = "memory"
+buffer.max_events = 100000
+buffer.when_full = "block"
+acknowledgements.enabled = true
 
 # clickhouse
 [sinks.clickhouse_out]
@@ -82,24 +155,19 @@ table = "event_logs"
 auth.strategy = "basic"
 auth.user = "${CLICKHOUSE_USER}"
 auth.password = "${CLICKHOUSE_PASSWORD}"
-
+batch.max_events = 100000        # dbbench 최적: 배치 10만 (1만이면 3.1만/s, 10만이면 13만/s)
+batch.max_bytes = 600000000      # 10만 건이 들어가도록
+request.concurrency = 8          # ClickHouse만 저장 시 동시 4 중 약 3개 사용(상한 근처) → 8로 상향
 
 # ── Sink 버퍼 및 저장 확인 ──────────────────────────────────────────
-# 저장소 장애 시 디스크 버퍼에 보관하고 복구 후 전송
-# when_full = block: 버퍼가 차면 버리지 않고 대기 → Rust가 응답을 못 받아 Kafka 오프셋을 진행하지 않음 → 원본은 Kafka에 남음
-# (vector.toml의 테스트 예시로 사용했던 drop_newest를 쓰면 이벤트가 유실될 수 있음)
-# acknowledgements: 두 저장소의 디스크 버퍼에 저장된 뒤에만 Rust에 200 응답
-[sinks.opensearch_out.buffer]
-type = "disk"
-max_size = 1073741824   # 1GiB
-when_full = "block"
-
-[sinks.opensearch_out.acknowledgements]
-enabled = true
+# block + ack를 함께 쓰는 이유: 이벤트를 버리지 않고, 두 DB 저장이 확인된 것만 성공으로 응답 → 유실 방지
+# - block: 버퍼가 가득 차면 새 이벤트를 받지 않고 기다림 (버리지 않음)
+# - ack:   OpenSearch와 ClickHouse가 모두 저장한 뒤에만 Rust에 200 응답 (실패 시 Rust가 재시도)
+# memory 버퍼라 vector-storage가 죽으면 버퍼 안의 로그는 사라짐 → Rust는 200을 못 받았으므로 같은 묶음을 다시 보내서 복구
 
 [sinks.clickhouse_out.buffer]
-type = "disk"
-max_size = 1073741824
+type = "memory"
+max_events = 300000
 when_full = "block"
 
 [sinks.clickhouse_out.acknowledgements]

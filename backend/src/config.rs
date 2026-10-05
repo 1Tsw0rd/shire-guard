@@ -55,6 +55,8 @@ pub struct AppConfig {
 
     // Playbook AI (Ollama)
     pub ollama_base_url: String,
+    // 이벤트 로그 저장 전용 Vector (Playbook 처리가 끝난 최종 로그를 OpenSearch/ClickHouse로 저장)
+    pub storage_url: String,
 }
 
 impl AppConfig {
@@ -97,6 +99,13 @@ impl AppConfig {
             ollama_base_url: {
                 let port = std::env::var("OLLAMA_PORT").map_err(|_| {
                     AppError::Internal("OLLAMA_PORT 환경변수가 설정되지 않았습니다.".into())
+                })?;
+                format!("http://localhost:{port}")
+            },
+
+            storage_url: {
+                let port = std::env::var("VECTOR_STORAGE_PORT").map_err(|_| {
+                    AppError::Internal("VECTOR_STORAGE_PORT 환경변수가 설정되지 않았습니다.".into())
                 })?;
                 format!("http://localhost:{port}")
             },

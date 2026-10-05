@@ -20,6 +20,7 @@ use backend::core::enrichment::service::EnrichmentService;
 use backend::core::playbook::ai::AiClient;
 use backend::core::playbook::engine::PlaybookEngine;
 use backend::core::playbook::store::PlaybookStore;
+use backend::core::storage::forwarder::{CHANNEL_CAPACITY, StorageForwarder};
 use backend::state::AppState;
 
 #[tokio::main]
@@ -91,6 +92,13 @@ async fn main() {
     let metrics =
         Arc::new(Metrics::new(&config.broker, &config.cache).expect("metrics 초기화 실패"));
 
+    // 전달 Task: 처리가 끝난 로그를 Batch로 vector-storage로 보냄
+    // Consumer보다 먼저 실행해서, 처리 Task가 넘기는 로그를 바로 받을 수 있게 함
+    let (storage_tx, storage_rx) = tokio::sync::mpsc::channel(CHANNEL_CAPACITY);
+    let forwarder = StorageForwarder::new(config.storage_url.clone(), metrics.clone())
+        .expect("Storage Forwarder 생성 실패");
+    tokio::spawn(forwarder.run(storage_rx));
+
     // Kafka/RedPanda Consumer를 백그라운드 태스크로 실행 (HTTP 서버와 별개로 계속 동작)
     let consumer =
         kafka::build_consumer(&config.broker, metrics.clone()).expect("Kafka Consumer 생성 실패");
@@ -101,6 +109,7 @@ async fn main() {
         metrics.clone(),
         enrichment.clone(),
         engine,
+        storage_tx,
     ));
 
     // Redis/Dragonfly Key 개수 반환 매트릭(15초 주기)

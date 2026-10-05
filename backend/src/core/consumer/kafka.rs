@@ -41,8 +41,9 @@ use crate::config::BrokerConfig;
 use crate::core::consumer::event::RawEvent;
 use crate::core::enrichment::service::EnrichmentService;
 use crate::core::playbook::engine::PlaybookEngine;
+use crate::core::storage::record::StorageRecord;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 
 /*
 PROCESS_CONCURRENCY 상수 설명
@@ -146,6 +147,7 @@ pub async fn run(
     metrics: Arc<Metrics>,
     enrichment: Arc<EnrichmentService>,
     engine: Arc<PlaybookEngine>,
+    storage_tx: mpsc::Sender<StorageRecord>,
 ) {
     // Topic 구독
     if let Err(e) = consumer.subscribe(&[&topic]) {
@@ -173,6 +175,10 @@ pub async fn run(
             Ok(msg) => {
                 metrics.consumer_messages_received.inc();
 
+                // 이 메시지의 Kafka 위치 (이벤트 로그를 OpenSearch/ClickHouse에 저장 완료 후 커밋할 위치를 계산할 때 사용)
+                let partition = msg.partition();
+                let offset = msg.offset();
+
                 let Some(payload) = msg.payload() else {
                     metrics.consumer_events_failed.inc();
                     tracing::warn!("[EMPTY MESSAGE] 빈 메시지 수신, 건너뜀");
@@ -196,11 +202,20 @@ pub async fn run(
 
                         let enrichment = enrichment.clone();
                         let engine = engine.clone();
+                        let storage_tx = storage_tx.clone();
 
                         // 병렬 처리 실행
                         tokio::spawn(async move {
                             let _permit = permit; // Task가 종료되면 permit이 drop되어 Semaphore에 자동 반환됨
-                            process_event(event, &enrichment, &engine).await;
+                            process_event(
+                                event,
+                                partition,
+                                offset,
+                                &enrichment,
+                                &engine,
+                                &storage_tx,
+                            )
+                            .await;
                         });
                     }
                     Err(e) => {
@@ -216,8 +231,15 @@ pub async fn run(
     }
 }
 
-// 이벤트 하나를 처리: Enrichment 실행 -> Playbook 평가
-async fn process_event(event: RawEvent, enrichment: &EnrichmentService, engine: &PlaybookEngine) {
+// 이벤트 하나를 처리: Enrichment 실행 -> Playbook 평가 -> 이벤트 로그를 전달 Task로 넘김(전달된 로그는 OpenSearch/ClickHouse에 저장 작업에 사용됨)
+async fn process_event(
+    event: RawEvent,
+    partition: i32,
+    offset: i64,
+    enrichment: &EnrichmentService,
+    engine: &PlaybookEngine,
+    storage_tx: &mpsc::Sender<StorageRecord>,
+) {
     // Enrichment 실행
     let evidence = enrichment.enrich_event(event).await;
     tracing::debug!(
@@ -226,30 +248,39 @@ async fn process_event(event: RawEvent, enrichment: &EnrichmentService, engine: 
     );
     tracing::trace!(?evidence, "[EVIDENCE] {:?}", evidence);
 
-    // Playbook 평가
-    // TODO 저장 배선 단계에서 이 결과를 OpenSearch/ClickHouse 저장으로 교체
-    match engine.run(&evidence).await {
-        Some(result) => {
-            tracing::debug!(
+    // Playbook 평가 (결정한 Playbook이 없으면 None → 원본 로그 그대로 저장)
+    let playbook_result = engine.run(&evidence).await;
+    match &playbook_result {
+        Some(result) => tracing::debug!(
+            event_id = %evidence.event.event_id,
+            action = ?result.action,
+            evaluated = result.evaluated,
+            "[PLAYBOOK DECIDED] Playbook 판정 완료"
+        ),
+        None => tracing::debug!(
+            event_id = %evidence.event.event_id,
+            "[PLAYBOOK NO DECISION] 결정한 Playbook 없음, 원본 그대로 저장"
+        ),
+    }
+
+    // 저장할 로그 한 건 생성
+    let record = match StorageRecord::new(&evidence, playbook_result.as_ref(), partition, offset) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
                 event_id = %evidence.event.event_id,
-                action = ?result.action,
-                evaluated = result.evaluated,
-                "[PLAYBOOK DECIDED] Playbook 판정 완료"
+                error = %e,
+                "[STORAGE RECORD FAILED] 저장 로그 직렬화 실패"
             );
-            match serde_json::to_string(&result) {
-                Ok(json) => {
-                    tracing::debug!(playbook_result = %json, "[PLAYBOOK RESULT]")
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "playbook_result 직렬화 실패")
-                }
-            }
+            return;
         }
-        None => {
-            tracing::debug!(
-                event_id = %evidence.event.event_id,
-                "[PLAYBOOK NO DECISION] 결정한 Playbook 없음, 원본 그대로 통과"
-            );
-        }
+    };
+
+    // 전달 Task로 넘김: 채널이 가득 차면 여기서 대기 -> 처리 Task의 permit이 반납되지 않아 Kafka 소비도 멈춤 (backpressure)
+    if storage_tx.send(record).await.is_err() {
+        tracing::error!(
+            event_id = %evidence.event.event_id,
+            "[STORAGE CHANNEL CLOSED] 전달 Task가 종료되어 로그를 넘기지 못함"
+        );
     }
 }
