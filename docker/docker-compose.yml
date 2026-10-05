@@ -7,7 +7,6 @@ networks:
 include:
   - docker-compose.ollama.yml
   - docker-compose.vector.yml
-  - docker-compose.vector-storage.yml
   - docker-compose.kafka.yml
   - docker-compose.redpanda.yml
   - docker-compose.opensearch.yml
@@ -25,7 +24,6 @@ include:
 #   Kafka    : ${KAFKA_PORT}:${KAFKA_PORT} (내부용), ${KAFKA_EXTERNAL_PORT}:${KAFKA_EXTERNAL_PORT} (호스트용)
 #   Ollama   : ${OLLAMA_PORT}:${OLLAMA_PORT}
 #   Vector   : ${VECTOR_PORT}:${VECTOR_PORT}, ${VECTOR_API_PORT}:${VECTOR_API_PORT}
-#   Vector Storage : ${VECTOR_STORAGE_PORT}:${VECTOR_STORAGE_PORT}, ${VECTOR_STORAGE_API_PORT}:${VECTOR_STORAGE_API_PORT}
 #
 # 가변:고정 → 현재 Compose에서는 컨테이너 내부 포트를 기본값으로 고정
 #   PostgreSQL              : ${POSTGRES_PORT}:5432
@@ -39,4 +37,3 @@ include:
 #   cAdvisor                : ${CADVISOR_PORT}:8080
 #   Loki                    : ${LOKI_PORT}:3100
 #   Vector (Metrics)        : ${VECTOR_METRICS_PORT}:9598
-#   Vector Storage (Metrics): ${VECTOR_STORAGE_METRICS_PORT}:9598
