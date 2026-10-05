@@ -7,7 +7,7 @@
 --     username String,
 --     timestamp DateTime64(3)
 -- ) ENGINE = MergeTree()
--- ORDER BY timestamp; No newline at end of file
+-- ORDER BY timestamp;
 
 -- 테이블 생성
 CREATE TABLE IF NOT EXISTS shire.event_logs (
