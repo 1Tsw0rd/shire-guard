@@ -111,10 +111,10 @@ impl Metrics {
             AppError::Internal(format!("shireguard_config_active_cache 생성 실패: {e}"))
         })?;
 
-        // 저장(vector-storage) 관련 지표
+        // DB 로그 저장 관련 지표
         let storage_events_sent = IntCounter::new(
             "shireguard_storage_events_sent_total",
-            "vector-storage가 저장 완료(200)를 응답한 로그 수",
+            "OpenSearch와 ClickHouse에 모두 저장 완료된 로그 수",
         )
         .map_err(|e| {
             AppError::Internal(format!(
@@ -124,7 +124,7 @@ impl Metrics {
 
         let storage_retries = IntCounter::new(
             "shireguard_storage_retries_total",
-            "vector-storage 전송 실패(5xx, 연결 실패)로 재시도한 횟수 (묶음 단위)",
+            "OpenSearch/ClickHouse 저장 실패(오류 응답, 연결 실패)로 재시도한 횟수 (묶음 단위)",
         )
         .map_err(|e| {
             AppError::Internal(format!("shireguard_storage_retries_total 생성 실패: {e}"))

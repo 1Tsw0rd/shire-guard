@@ -85,7 +85,7 @@ encoding.codec = "json"
 #"acks" = "1"
 
 # ── 비활성화된 싱크 (opensearch_out, clickhouse_out) ──
-# Vector 직접 저장은 테스트용이었음. 저장은 이제 vector-storage가 담당 (백엔드가 Playbook 처리 후 전송)
+# Vector 직접 저장은 테스트용이었음. 저장은 백엔드가 Playbook 처리 후 OpenSearch/ClickHouse에 직접 수행
 # 다시 켜려면 clickhouse_out의 security_events table이 필요함(docker/clickhouse/init/001_init.sql 참고)
 
 # opensearch 전용

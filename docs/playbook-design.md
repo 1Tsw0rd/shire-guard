@@ -29,8 +29,6 @@ RAW EVENT
    ├── Ollama
    │      └─ AI 분석
    │
-   ▼
-vector-storage (디스크 버퍼)
    │
    ▼
 OpenSearch + ClickHouse
@@ -251,8 +249,8 @@ ORDER BY (payload.ingested_at, log_id);               -- 정렬 키 = 중복 판
 ### 4) 최종적으로 OpenSearch와 ClickHouse에 저장되는 로그
 - 결정한 플레이북이 없는 경우: 원본 로그
 - 결정한 플레이북이 1개 이상인 경우: 원본 로그 + `playbook_result`
-- 저장 경로: 백엔드 → vector-storage(저장 전용 Vector) → OpenSearch / ClickHouse
-- 로그 ID: `log_id = sha256(event_id|ingested_at)` (vector-storage에서 생성)
+- 저장 경로: 백엔드 → OpenSearch / ClickHouse
+- 로그 ID: `log_id = sha256(event_id|ingested_at)`
   - 플레이북 로그를 저장하는 OpenSearch / ClickHouse에 중복된 로그가 전달될 경우 log_id로 중복 방지 가능
   - 예를 들어 백엔드 장애로 같은 Kafka 메시지를 다시 처리하면 `log_id`가 같아 중복 제거됨
     - OpenSearch: `_id = log_id`로 덮어씀 (즉시)

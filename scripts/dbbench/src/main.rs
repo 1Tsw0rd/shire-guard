@@ -6,7 +6,7 @@
 //   ./dbbench ch 500000 --batch 10000 --concurrency 4
 //
 // 문서 모양: sample.json(실제 저장된 문서 1건)을 복제하고 event_id, ingested_at만 바꿔 서로 다른 로그로 만듦
-// log_id = sha256(event_id|ingested_at) → 파이프라인(vector-storage)과 같은 방식
+// log_id = sha256(event_id|ingested_at)
 // 측정 시간에는 문서 생성 시간이 포함되지 않음 (전송할 본문을 미리 다 만든 뒤 측정 시작)
 
 use std::sync::Arc;

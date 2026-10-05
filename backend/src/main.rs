@@ -92,7 +92,7 @@ async fn main() {
     let metrics =
         Arc::new(Metrics::new(&config.broker, &config.cache).expect("metrics 초기화 실패"));
 
-    // 전달 Task: 처리가 끝난 로그를 Batch로 vector-storage로 보냄
+    // 전달 Task: 처리가 끝난 로그를 Batch로 OpenSearch/ClickHouse에 저장
     // Consumer보다 먼저 실행해서, 처리 Task가 넘기는 로그를 바로 받을 수 있게 함
     let (storage_tx, storage_rx) = tokio::sync::mpsc::channel(CHANNEL_CAPACITY);
     let forwarder = StorageForwarder::new(config.storage_url.clone(), metrics.clone())
