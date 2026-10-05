@@ -642,8 +642,18 @@ mod tests {
             }
         };
 
-        let k1 = cache_key(AiModel::Qwen25Instruct14b, "분석하라", &make("2026-10-01T10:00:00.123456789Z")).unwrap();
-        let k2 = cache_key(AiModel::Qwen25Instruct14b, "분석하라", &make("2026-10-02T23:59:59.000000001Z")).unwrap();
+        let k1 = cache_key(
+            AiModel::Qwen25Instruct14b,
+            "분석하라",
+            &make("2026-10-01T10:00:00.123456789Z"),
+        )
+        .unwrap();
+        let k2 = cache_key(
+            AiModel::Qwen25Instruct14b,
+            "분석하라",
+            &make("2026-10-02T23:59:59.000000001Z"),
+        )
+        .unwrap();
 
         assert_eq!(k1, k2);
     }
