@@ -484,6 +484,7 @@ mod tests {
                 "event_id": "{event_id}",
                 "event_type": "file_download",
                 "timestamp": "{timestamp}",
+                "ingested_at": "2026-10-03T10:00:01.123456789Z",
                 "src_ip": "1.2.3.4",
                 "file_name": "invoice.exe"
             }}"#
@@ -600,6 +601,7 @@ mod tests {
             "event_id": "evt-1",
             "event_type": "file_download",
             "timestamp": "2026-09-26T10:00:00Z",
+            "ingested_at": "2026-10-03T10:00:01.123456789Z",
             "src_ip": "1.2.3.4",
             "file_name": "malware.exe"
         }"#,

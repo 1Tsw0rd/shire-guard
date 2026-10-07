@@ -37,6 +37,7 @@ mod tests {
                 "event_id": "evt-1",
                 "event_type": "login_failure",
                 "timestamp": "2026-09-08T10:17:32Z",
+                "ingested_at": "2026-10-03T10:00:01.123456789Z",
                 "src_ip": "185.220.101.45",
                 "username": "admin",
                 "attempt_count": 12,
@@ -80,6 +81,7 @@ mod tests {
                 "event_id": "evt-2",
                 "event_type": "login_failure",
                 "timestamp": "2026-09-08T10:17:32Z",
+                "ingested_at": "2026-10-03T10:00:01.123456789Z",
                 "src_ip": "185.220.101.45"
             }"#,
         )
