@@ -149,7 +149,8 @@ PUT _index_template/event-logs
       "number_of_shards": 4,           // 성능 테스트 결과 초당 10만 insert 성능을 보여준 최소 설정값  
       "number_of_replicas": 0,          // 단일 노드이므로 0 세팅
       "index.mapping.ignore_malformed": true,  // 숫자·날짜·IP 타입이 안 맞아도 문서를 거부하지 않고 그 필드만 인덱싱 제외(이 설정이 없으면 타입 맞지 않는 필드가 있는 경우 해당 로그 하나를 통째로 날리게 됨)
-       "refresh_interval": "30s" // 새 문서를 검색할 수 있게 만드는 주기를 기본값 1s → 30s로 늘려, 문서 저장 성능 향상
+       "refresh_interval": "30s", // 새 문서를 검색할 수 있게 만드는 주기를 기본값 1s → 30s로 늘려, 문서 저장 성능 향상
+       "translog.flush_threshold_size": "1024mb" // Translog(Transaction Log: 인덱싱 작업을 기록하는 로그) 크기 임계값을 기본값 512MB에서 1024MB로 높여 Flush 빈도를 줄이고 인덱싱 성능을 개선
     },
     "mappings": {
       "dynamic_templates": [

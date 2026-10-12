@@ -23,4 +23,9 @@ CREATE TABLE IF NOT EXISTS shire.event_logs (
     )
 ) ENGINE = ReplacingMergeTree                         -- 같은 log_id는 병합 시 하나만 남김 (정확한 조회는 FINAL)
 PARTITION BY toYYYYMM(payload.ingested_at)            -- 월 단위 파티션 (OpenSearch 인덱스와 같은 수집 시각 기준)
-ORDER BY (payload.ingested_at, log_id);               -- 정렬 키 = 중복 판단 기준, ingested_at이 앞이라 시간 범위 조회에 유리
+ORDER BY (payload.ingested_at, log_id)                -- 정렬 키 = 중복 판단 기준, ingested_at이 앞이라 시간 범위 조회에 유리
+SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part: Data Part를 Wide 형식으로 저장하기 위한 최소 크기 (바이트)
+                                                      -- 기본값 10 MiB에서 256 MiB로 변경하여 더 작은 Data Part가 Compact 형식으로 저장되도록 설정
+                                                      -- Wide는 컬럼마다 파일을 나누어 저장하고, Compact는 여러 컬럼의 데이터를 하나의 data.bin 파일에 모아 저장
+                                                      -- payload JSON 내부에 경로가 많으면 Wide는 경로별로 데이터 파일을 생성하므로 파일 수가 많아짐
+                                                      -- 작은 Data Part를 Compact로 저장해 여러 경로의 데이터를 적은 수의 파일에 모으고, 파일 생성 부담을 줄여 대량 INSERT 성능을 개선
