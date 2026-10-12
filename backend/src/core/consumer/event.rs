@@ -135,6 +135,7 @@ mod tests {
             "event_id": "evt-3",
             "event_type": "dns_beacon",
             "timestamp": "2026-09-08T12:30:44Z",
+            "ingested_at": "2026-09-08T12:30:44.123456789Z",
             "src_ip": "198.51.100.77",
             "dst_domain": "telemetry-sync.info",
             "hostname": "WKS-1183",

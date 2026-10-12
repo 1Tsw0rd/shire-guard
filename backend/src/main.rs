@@ -6,6 +6,8 @@ use axum::extract::State; // Axum 익스트랙터: .with_state(state)로 넘긴 
 use axum::routing::get;
 use sqlx::postgres::PgPoolOptions;
 
+use backend::common::clients::clickhouse::ClickHouseClient;
+use backend::common::clients::opensearch::OpenSearchClient;
 use backend::common::clients::redis::RedisClient;
 use backend::common::error::AppError;
 use backend::common::fallback::not_found;
@@ -95,8 +97,20 @@ async fn main() {
     // 전달 Task: 처리가 끝난 로그를 Batch로 OpenSearch/ClickHouse에 저장
     // Consumer보다 먼저 실행해서, 처리 Task가 넘기는 로그를 바로 받을 수 있게 함
     let (storage_tx, storage_rx) = tokio::sync::mpsc::channel(CHANNEL_CAPACITY);
-    let forwarder = StorageForwarder::new(config.storage_url.clone(), metrics.clone())
-        .expect("Storage Forwarder 생성 실패");
+
+    let opensearch =
+        OpenSearchClient::new(config.opensearch_url.clone()).expect("OpenSearch Client 생성 실패");
+    let clickhouse = ClickHouseClient::new(
+        config.clickhouse_url.clone(),
+        config.clickhouse_db.clone(),
+        config.clickhouse_user.clone(),
+        config.clickhouse_password.clone(),
+    )
+    .expect("ClickHouse Client 생성 실패");
+    // postgres는 아래 AppState로 이동되므로 clone (PgPool clone은 같은 커넥션 풀을 공유)
+    let forwarder =
+        StorageForwarder::new(opensearch, clickhouse, postgres.clone(), metrics.clone());
+
     tokio::spawn(forwarder.run(storage_rx));
 
     // Kafka/RedPanda Consumer를 백그라운드 태스크로 실행 (HTTP 서버와 별개로 계속 동작)
