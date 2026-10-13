@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::extract::State; // Axum 익스트랙터: .with_state(state)로 넘긴 앱 전역 상태를 핸들러 인자로 꺼내 쓸 수 있게 해줌
@@ -14,7 +14,8 @@ use backend::common::fallback::not_found;
 use backend::common::metrics::Metrics;
 use backend::common::middleware::request_id_middleware;
 use backend::config::AppConfig;
-use backend::core::consumer::kafka;
+use backend::core::consumer::kafka::{self, ConsumerFailures, OffsetCommitter};
+use backend::core::consumer::offset::OffsetTracker;
 use backend::core::enrichment::providers::abuseipdb::AbuseIpDbProvider;
 use backend::core::enrichment::providers::dns::DnsProvider;
 use backend::core::enrichment::providers::virustotal::VirusTotalProvider;
@@ -94,8 +95,27 @@ async fn main() {
     let metrics =
         Arc::new(Metrics::new(&config.broker, &config.cache).expect("metrics 초기화 실패"));
 
+    // Kafka/RedPanda Consumer 생성 + offset 추적기
+    // 추적기는 Consumer(rebalance 시 기록 삭제), 수신 루프(begin), 전달 Task(finish)가 함께 사용
+    let tracker = Arc::new(Mutex::new(OffsetTracker::new()));
+    let consumer = Arc::new(
+        kafka::build_consumer(&config.broker, metrics.clone(), tracker.clone())
+            .expect("Kafka Consumer 생성 실패"),
+    );
+    let committer = Arc::new(OffsetCommitter::new(
+        consumer.clone(),
+        tracker,
+        config.broker.topic.clone(),
+    ));
+    // 처리할 수 없는 메시지(빈 메시지, 역직렬화 실패 등)를 storage_failures에 보관한 뒤 완료 처리
+    let failures = Arc::new(ConsumerFailures::new(
+        postgres.clone(),
+        metrics.clone(),
+        committer.clone(),
+    ));
+
     // 전달 Task: 처리가 끝난 로그를 Batch로 OpenSearch/ClickHouse에 저장
-    // Consumer보다 먼저 실행해서, 처리 Task가 넘기는 로그를 바로 받을 수 있게 함
+    // Consumer 수신 루프보다 먼저 실행해서, 처리 Task가 넘기는 로그를 바로 받을 수 있게 함
     let (storage_tx, storage_rx) = tokio::sync::mpsc::channel(CHANNEL_CAPACITY);
 
     let opensearch =
@@ -108,18 +128,21 @@ async fn main() {
     )
     .expect("ClickHouse Client 생성 실패");
     // postgres는 아래 AppState로 이동되므로 clone (PgPool clone은 같은 커넥션 풀을 공유)
-    let forwarder =
-        StorageForwarder::new(opensearch, clickhouse, postgres.clone(), metrics.clone());
+    let forwarder = StorageForwarder::new(
+        opensearch,
+        clickhouse,
+        postgres.clone(),
+        metrics.clone(),
+        committer.clone(),
+    );
 
     tokio::spawn(forwarder.run(storage_rx));
 
-    // Kafka/RedPanda Consumer를 백그라운드 태스크로 실행 (HTTP 서버와 별개로 계속 동작)
-    let consumer =
-        kafka::build_consumer(&config.broker, metrics.clone()).expect("Kafka Consumer 생성 실패");
-    let topic = config.broker.topic.clone();
+    // Kafka/RedPanda 수신 루프를 백그라운드 태스크로 실행 (HTTP 서버와 별개로 계속 동작)
     tokio::spawn(kafka::run(
         consumer,
-        topic,
+        committer,
+        failures,
         metrics.clone(),
         enrichment.clone(),
         engine,

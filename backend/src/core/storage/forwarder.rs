@@ -69,13 +69,15 @@ use sqlx::PgPool;
 use tokio::sync::{Semaphore, mpsc};
 // Instant: 특정 시점을 나타내는 구조체
 // timeout_at: 지정한 Instant까지 기다리다가, 그 시간이 지나면 Err 반환
-use tokio::time::{Instant, sleep, timeout_at};
+use tokio::time::{Instant, timeout_at};
 
 use crate::common::clients::clickhouse::ClickHouseClient;
 use crate::common::clients::opensearch::{BulkDoc, OpenSearchClient};
 use crate::common::metrics::Metrics;
-use crate::core::storage::failures::{FailedLog, save_failures};
+use crate::core::consumer::kafka::OffsetCommitter;
+use crate::core::storage::failures::{FailedLog, save_failures_until_ok};
 use crate::core::storage::record::StorageRecord;
+use crate::core::storage::retry::RetryDelay;
 
 pub const CHANNEL_CAPACITY: usize = 40_000; // 채널에 쌓일 수 있는 최대 로그 수 (Batch 2개분)
 
@@ -83,14 +85,12 @@ const BATCH_SIZE: usize = 20_000; // Batch 1개의 최대 로그 수
 const BATCH_MAX_WAIT: Duration = Duration::from_millis(200); // Batch을 완성하기까지 최대 대기 시간
 const MAX_IN_FLIGHT: usize = 8; // 동시에 저장 중일 수 있는 Batch 수
 
-const RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100); // 재시도 간격 시간 (0.1초)
-const RETRY_MAX_DELAY: Duration = Duration::from_secs(30); // 재시도 최대 시간 상한 (30초)
-
 pub struct StorageForwarder {
     opensearch: OpenSearchClient,
     clickhouse: ClickHouseClient,
     postgres: PgPool,
     metrics: Arc<Metrics>,
+    committer: Arc<OffsetCommitter>,
 }
 
 // OpenSearch가 거절한 로그와 거절 사유
@@ -105,12 +105,14 @@ impl StorageForwarder {
         clickhouse: ClickHouseClient,
         postgres: PgPool,
         metrics: Arc<Metrics>,
+        committer: Arc<OffsetCommitter>,
     ) -> Self {
         Self {
             opensearch,
             clickhouse,
             postgres,
             metrics,
+            committer,
         }
     }
 
@@ -140,7 +142,7 @@ impl StorageForwarder {
         tracing::warn!("[STORAGE FORWARDER CLOSED] 채널이 닫혀 전달 Task를 종료함");
     }
 
-    // Batch 1개 저장: OpenSearch → ClickHouse → (거절된 로그가 있으면) PostgreSQL
+    // Batch 1개 저장: OpenSearch → ClickHouse → (거절된 로그가 있으면) PostgreSQL -> Kafka commit 위치 갱신
     async fn store_batch(&self, batch: Vec<StorageRecord>) {
         // OpenSearch
         let (stored, rejected) = self.index_opensearch(&batch).await;
@@ -163,6 +165,9 @@ impl StorageForwarder {
             rejected = rejected.len(),
             "[STORAGE BATCH DONE] Batch 저장 완료"
         );
+
+        self.committer
+            .finish(batch.iter().map(|record| (record.partition, record.offset)));
     }
 
     // 1. OpenSearch: 모든 문서가 저장되거나 거절될 때까지 반복
@@ -313,42 +318,20 @@ impl StorageForwarder {
             .inc_by(records.len() as u64);
     }
 
-    // 3. PostgreSQL: 거절된 로그를 storage_failures에 기록, 성공할 때까지 반복
+    // 3. PostgreSQL: 거절된 로그를 storage_failures에 기록, 성공할 때까지 반복 (재시도 로직은 failures.rs)
     async fn save_rejected(&self, rejected: &[Rejected<'_>]) {
         let failures: Vec<FailedLog> = rejected
             .iter()
             .map(|r| FailedLog {
                 log_id: &r.record.log_id,
                 reason: &r.reason,
-                payload: &r.record.doc,
+                payload: r.record.doc.as_bytes(),
                 partition: r.record.partition,
                 offset: r.record.offset,
             })
             .collect();
 
-        let mut delay = RetryDelay::new();
-
-        loop {
-            match save_failures(&self.postgres, &failures).await {
-                Ok(()) => break,
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        count = failures.len(),
-                        retry_in_ms = delay.current().as_millis() as u64,
-                        "[STORAGE FAILURES RETRY] storage_failures 저장 실패, 재시도"
-                    );
-                }
-            }
-
-            // PostgreSQL 재시도 횟수를 메트릭 카운터에 1 증가
-            self.metrics
-                .storage_retries
-                .with_label_values(&["postgres"])
-                .inc();
-
-            delay.wait().await;
-        }
+        save_failures_until_ok(&self.postgres, &self.metrics, &failures).await;
     }
 
     // DB 요청 1번에 걸린 시간을 지표에 기록
@@ -408,30 +391,6 @@ fn build_clickhouse_rows(records: &[&StorageRecord]) -> Vec<u8> {
         rows.push_str(SUFFIX);
     }
     rows.into_bytes() // insert_json_rows가 Vec<u8>를 받아서 타입 변환 
-}
-
-// 재시도 대기 시간: RETRY_INITIAL_DELAY부터 2배씩, RETRY_MAX_DELAY까지
-struct RetryDelay {
-    delay: Duration,
-}
-
-impl RetryDelay {
-    fn new() -> Self {
-        Self {
-            delay: RETRY_INITIAL_DELAY,
-        }
-    }
-
-    // 다음에 기다릴 시간 (로그용)
-    fn current(&self) -> Duration {
-        self.delay
-    }
-
-    // 현재 대기 시간만큼 기다리고, 다음 대기 시간을 2배로 늘림
-    async fn wait(&mut self) {
-        sleep(self.delay).await;
-        self.delay = (self.delay * 2).min(RETRY_MAX_DELAY);
-    }
 }
 
 // 채널에서 로그를 모아서 Batch 하나를 만듬
@@ -564,25 +523,5 @@ mod tests {
             assert!(value["payload"].is_object());
         }
         assert_eq!(rows.capacity(), rows.len()); // 미리 계산한 크기가 실제 크기와 같음
-    }
-
-    // 시나리오 7: 재시도 대기 시간이 100ms부터 2배씩 증가하고 최대 30초로 제한되는지 확인
-    // start_paused = true: Tokio의 가상 시간을 제어해 sleep()의 대기를 실제 시간만큼 기다리지 않고 테스트
-    #[tokio::test(start_paused = true)]
-    async fn retry_delay_doubles_up_to_max() {
-        let mut delay = RetryDelay::new();
-        // 최초 대기 시간이 100ms인지 확인
-        assert_eq!(delay.current(), Duration::from_millis(100));
-        // wait(): 현재 대기 시간(100ms)만큼 비동기로 기다린 뒤 다음 대기 시간을 2배로 변경
-        delay.wait().await;
-        // 100 * 2 = 200ms
-        assert_eq!(delay.current(), Duration::from_millis(200));
-
-        // 20번 반복해서 대기 시간이 최대값에 도달하도록 함
-        for _ in 0..20 {
-            delay.wait().await;
-        }
-        // 반복 실행 후 대기 시간이 최대값인 30초에 도달했는지 확인
-        assert_eq!(delay.current(), RETRY_MAX_DELAY);
     }
 }

@@ -21,6 +21,7 @@ use prometheus::{
     IntCounter,    // 계속 증가하기만 하는 정수형 값을 기록하는 타입
     IntCounterVec, // IntCounter를 여러 대상이나 종류별로 나누어 기록하는 타입
     IntGauge,      // 현재 상태를 나타내는 정수형 값을 기록하는 타입, 값이 증가하거나 감소할 수 있음
+    IntGaugeVec,   // IntGauge를 여러 대상이나 종류별로 나누어 기록하는 타입
     Opts, // 일반적인 Prometheus 메트릭을 만들 때 필요한 기본 설정을 정의하는 타입, 예: 메트릭 이름과 설명을 지정할 때 사용
     Registry, // 애플리케이션에서 사용하는 Prometheus 메트릭을 등록하고 관리하는 객체
     TextEncoder, // 등록된 메트릭을 Prometheus가 수집할 수 있는 텍스트 형식으로 변환하는 기능
@@ -35,6 +36,8 @@ pub struct Metrics {
     pub consumer_events_parsed: IntCounter,
     pub consumer_events_failed: IntCounter,
     pub consumer_broker_connected: IntGauge,
+    pub consumer_committed_offset: IntGaugeVec, // partition 라벨: 0, 1, 2 … (Kafka partition 번호)
+    pub consumer_lag: IntGaugeVec,              // partition 라벨: 0, 1, 2 … (Kafka partition 번호)
     pub cache_key_count: IntGauge,
     pub storage_events_sent: IntCounter,
     pub storage_db_events: IntCounterVec, // db 라벨: opensearch, clickhouse
@@ -91,6 +94,29 @@ impl Metrics {
                 "shireguard_consumer_broker_connected 생성 실패: {e}"
             ))
         })?;
+
+        // Kafka commit 위치와 남은 처리량 (librdkafka 통계에서 partition별로 갱신)
+        let consumer_committed_offset = IntGaugeVec::new(
+            Opts::new(
+                "shireguard_consumer_committed_offset",
+                "브로커에 commit된 offset (다음에 읽을 위치, partition별)",
+            ),
+            &["partition"],
+        )
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "shireguard_consumer_committed_offset 생성 실패: {e}"
+            ))
+        })?;
+
+        let consumer_lag = IntGaugeVec::new(
+            Opts::new(
+                "shireguard_consumer_lag",
+                "offset lag: 브로커 최신 offset - commit된 offset (partition별, offset 공백이 있으면 실제 메시지 수보다 클 수 있음)",
+            ),
+            &["partition"],
+        )
+        .map_err(|e| AppError::Internal(format!("shireguard_consumer_lag 생성 실패: {e}")))?;
 
         // 현재 docker/.env 안에 MESSAGE_BROKER 설정값을 노출하는 게이지로 Grafana에서 표시
         // Opts::new(name, help)
@@ -225,6 +251,12 @@ impl Metrics {
             .register(Box::new(consumer_broker_connected.clone()))
             .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
         registry
+            .register(Box::new(consumer_committed_offset.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(consumer_lag.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
             .register(Box::new(cache_key_count.clone()))
             .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
         registry
@@ -252,6 +284,8 @@ impl Metrics {
             consumer_events_parsed,
             consumer_events_failed,
             consumer_broker_connected,
+            consumer_committed_offset,
+            consumer_lag,
             cache_key_count,
             storage_events_sent,
             storage_db_events,
