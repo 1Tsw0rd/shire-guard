@@ -45,7 +45,7 @@ Kafka commit
     ↓
 4. 지표 갱신
 
-- 결과: 모든 로그는 "OpenSearch·ClickHouse 둘 다 저장" 또는 "둘 다 없이 storage_failures에 기록" 중 하나
+- 결과: 모든 로그는 "OpenSearch와 ClickHouse 둘 다 저장" 또는 "둘 다 없이 storage_failures에 기록" 중 하나
 - 재시도는 성공할 때까지 계속함 (버리면 유실), 대기 시간은 100ms부터 2배씩 최대 30초
 - backpressure: 저장이 막히면, 세마포어 자리가 없으므로 Kafka 소비가 멈춤 (메모리가 무한히 늘지 않음)
 - 같은 로그를 다시 저장해도 중복되지 않음: OpenSearch는 같은 _id로 덮어씀, ClickHouse는 ReplacingMergeTree가 병합 시 하나만 남김,
@@ -65,7 +65,7 @@ use sqlx::PgPool;
 // 처리 Task 1 ──┐
 // 처리 Task 2 ──┤
 // 처리 Task 3 ──┼──→ channel ──→ forwarder Task
-//     ...      ──┘
+//     ...    ──┘
 use tokio::sync::{Semaphore, mpsc};
 // Instant: 특정 시점을 나타내는 구조체
 // timeout_at: 지정한 Instant까지 기다리다가, 그 시간이 지나면 Err 반환

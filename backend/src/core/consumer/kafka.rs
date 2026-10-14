@@ -24,7 +24,7 @@
 // Kafka offset commit:
 // 메시지를 받으면 offset 추적기(offset.rs)에 등록하고, OpenSearch와 ClickHouse 저장이 끝난 offset까지만 commit 위치로 저장
 // (빈 메시지, 역직렬화 실패, 저장 로그 직렬화 실패는 원문과 사유를 PostgreSQL storage_failures에 보관한 뒤 완료 처리)
-// librdkafka 자동 offset 저장(enable.auto.offset.store)은 끄고, 브로커 commit은 librdkafka가 주기적으로 수행
+// librdkafka 자동 offset 저장 설정(enable.auto.offset.store)은 끄고, 브로커 commit은 librdkafka가 주기적으로 수행
 
 use std::sync::{Arc, Mutex};
 
