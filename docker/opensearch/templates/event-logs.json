@@ -2,9 +2,11 @@
   "index_patterns": ["event-logs-*"],
   "template": {
     "settings": {
-      "number_of_shards": 1,
+      "number_of_shards": 4,
       "number_of_replicas": 0,
-      "index.mapping.ignore_malformed": true 
+      "index.mapping.ignore_malformed": true,
+      "refresh_interval": "30s",
+      "translog.flush_threshold_size": "1024mb"
     },
     "mappings": {
       "dynamic_templates": [

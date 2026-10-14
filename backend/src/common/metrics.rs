@@ -13,7 +13,19 @@
 // 생성한 metric은 Registry에 등록하고,
 // Rust Axum의 /metrics API에서 Prometheus가 읽을 수 있는 텍스트 형식으로 변환해서 반환한다.
 
-use prometheus::{Encoder, GaugeVec, IntCounter, IntGauge, Opts, Registry, TextEncoder};
+use prometheus::{
+    Encoder,  // Promethues 메트릭 데이터를 외부에 전달 할 수 있는 형식으로 변환하기 위한 기능
+    GaugeVec, // 현재 값을 나타내는 Guage를 여러 대상별로 각각 기록하는 타입, 값은 증가하거나 감소할 수 있음
+    HistogramOpts, // Histogram 메트릭을 만들 때 필요한 설정을 정의하는 타입, 예: 메트릭 이름과 설명을 지정
+    HistogramVec,  // 측정한 값이 어느 범위에 얼마나 많이 분포하는지 기록하는 타입
+    IntCounter,    // 계속 증가하기만 하는 정수형 값을 기록하는 타입
+    IntCounterVec, // IntCounter를 여러 대상이나 종류별로 나누어 기록하는 타입
+    IntGauge,      // 현재 상태를 나타내는 정수형 값을 기록하는 타입, 값이 증가하거나 감소할 수 있음
+    IntGaugeVec,   // IntGauge를 여러 대상이나 종류별로 나누어 기록하는 타입
+    Opts, // 일반적인 Prometheus 메트릭을 만들 때 필요한 기본 설정을 정의하는 타입, 예: 메트릭 이름과 설명을 지정할 때 사용
+    Registry, // 애플리케이션에서 사용하는 Prometheus 메트릭을 등록하고 관리하는 객체
+    TextEncoder, // 등록된 메트릭을 Prometheus가 수집할 수 있는 텍스트 형식으로 변환하는 기능
+};
 
 use crate::common::error::AppError;
 use crate::config::{BrokerConfig, CacheBackend, CacheConfig, MessageBroker};
@@ -24,7 +36,14 @@ pub struct Metrics {
     pub consumer_events_parsed: IntCounter,
     pub consumer_events_failed: IntCounter,
     pub consumer_broker_connected: IntGauge,
+    pub consumer_committed_offset: IntGaugeVec, // partition 라벨: 0, 1, 2 … (Kafka partition 번호)
+    pub consumer_lag: IntGaugeVec,              // partition 라벨: 0, 1, 2 … (Kafka partition 번호)
     pub cache_key_count: IntGauge,
+    pub storage_events_sent: IntCounter,
+    pub storage_db_events: IntCounterVec, // db 라벨: opensearch, clickhouse
+    pub storage_retries: IntCounterVec,   // db 라벨: opensearch, clickhouse, postgres
+    pub storage_request_seconds: HistogramVec, // db 라벨: opensearch, clickhouse
+    pub storage_rejected: IntCounter,
 }
 
 impl Metrics {
@@ -76,6 +95,29 @@ impl Metrics {
             ))
         })?;
 
+        // Kafka commit 위치와 남은 처리량 (librdkafka 통계에서 partition별로 갱신)
+        let consumer_committed_offset = IntGaugeVec::new(
+            Opts::new(
+                "shireguard_consumer_committed_offset",
+                "브로커에 commit된 offset (다음에 읽을 위치, partition별)",
+            ),
+            &["partition"],
+        )
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "shireguard_consumer_committed_offset 생성 실패: {e}"
+            ))
+        })?;
+
+        let consumer_lag = IntGaugeVec::new(
+            Opts::new(
+                "shireguard_consumer_lag",
+                "offset lag: 브로커 최신 offset - commit된 offset (partition별, offset 공백이 있으면 실제 메시지 수보다 클 수 있음)",
+            ),
+            &["partition"],
+        )
+        .map_err(|e| AppError::Internal(format!("shireguard_consumer_lag 생성 실패: {e}")))?;
+
         // 현재 docker/.env 안에 MESSAGE_BROKER 설정값을 노출하는 게이지로 Grafana에서 표시
         // Opts::new(name, help)
         // &["broker"]는 이 게이지를 "broker"라는 label로 나눠서 관리하겠다는 선언 (아직 실제 값은 안 정해짐)
@@ -107,6 +149,59 @@ impl Metrics {
         )
         .map_err(|e| {
             AppError::Internal(format!("shireguard_config_active_cache 생성 실패: {e}"))
+        })?;
+
+        // DB 로그 저장 관련 지표
+        let storage_events_sent = IntCounter::new(
+            "shireguard_storage_events_sent_total",
+            "OpenSearch와 ClickHouse에 모두 저장 완료된 로그 수",
+        )
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "shireguard_storage_events_sent_total 생성 실패: {e}"
+            ))
+        })?;
+
+        let storage_db_events = IntCounterVec::new(
+            Opts::new(
+                "shireguard_storage_db_events_total",
+                "DB별 저장 완료된 로그 수 (db: opensearch, clickhouse)",
+            ),
+            &["db"],
+        )
+        .map_err(|e| {
+            AppError::Internal(format!("shireguard_storage_db_events_total 생성 실패: {e}"))
+        })?;
+
+        let storage_retries = IntCounterVec::new(
+            Opts::new(
+                "shireguard_storage_retries_total",
+                "DB 저장 실패(오류 응답, 연결 실패)로 재시도한 횟수, 묶음 단위 (db: opensearch, clickhouse, postgres)",
+            ),
+            &["db"],
+        )
+        .map_err(|e| {
+            AppError::Internal(format!("shireguard_storage_retries_total 생성 실패: {e}"))
+        })?;
+
+        // 요청 1번에 걸린 시간 분포 (어느 DB가 느린지 확인용)
+        let storage_request_seconds = HistogramVec::new(
+            HistogramOpts::new(
+                "shireguard_storage_request_seconds",
+                "DB 저장 요청 1번의 응답 시간(초) (db: opensearch, clickhouse)",
+            ),
+            &["db"],
+        )
+        .map_err(|e| {
+            AppError::Internal(format!("shireguard_storage_request_seconds 생성 실패: {e}"))
+        })?;
+
+        let storage_rejected = IntCounter::new(
+            "shireguard_storage_rejected_total",
+            "OpenSearch가 doc 자체 문제(400)로 거절해 storage_failures에 기록한 로그 수 (정상이면 0)",
+        )
+        .map_err(|e| {
+            AppError::Internal(format!("shireguard_storage_rejected_total 생성 실패: {e}"))
         })?;
 
         let broker_label = match broker_config.broker {
@@ -156,10 +251,31 @@ impl Metrics {
             .register(Box::new(consumer_broker_connected.clone()))
             .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
         registry
+            .register(Box::new(consumer_committed_offset.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(consumer_lag.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
             .register(Box::new(cache_key_count.clone()))
             .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
         registry
             .register(Box::new(config_active_cache))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(storage_events_sent.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(storage_retries.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(storage_db_events.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(storage_request_seconds.clone()))
+            .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
+        registry
+            .register(Box::new(storage_rejected.clone()))
             .map_err(|e| AppError::Internal(format!("metric 등록 실패: {e}")))?;
 
         Ok(Self {
@@ -168,7 +284,14 @@ impl Metrics {
             consumer_events_parsed,
             consumer_events_failed,
             consumer_broker_connected,
+            consumer_committed_offset,
+            consumer_lag,
             cache_key_count,
+            storage_events_sent,
+            storage_db_events,
+            storage_retries,
+            storage_request_seconds,
+            storage_rejected,
         })
     }
 

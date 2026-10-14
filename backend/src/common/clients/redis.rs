@@ -67,7 +67,7 @@ impl RedisClient {
     }
 
     // 분산 락 해제: 현재 값이 내가 넣은 owner_value와 일치할 때만 원자적으로 삭제
-    // GET→DEL을 분리하면 그 사이 TTL 만료로 다른 요청이 새로 획득한 락을
+    // GET -> DEL을 분리하면 그 사이 TTL 만료로 다른 요청이 새로 획득한 락을
     // 내가 잘못 지워버리는 사고가 날 수 있어, Lua(EVAL)로 확인+삭제를 한 번에 처리
     pub async fn unlock(&self, key: &str, owner_value: &str) -> Result<(), AppError> {
         const UNLOCK_SCRIPT: &str = r#"

@@ -4,9 +4,9 @@ Event
 IOC Field 추출 (event.rs의 enrichment_iocs())
     ↓
 ┌───────────────────────┐
-│ src_ip 존재?          │ → AbuseIPDB
-│ dst_domain 존재?      │ → DNS
-│ file_sha256 존재?     │ → VirusTotal
+│ src_ip 존재?          │ -> AbuseIPDB
+│ dst_domain 존재?      │ -> DNS
+│ file_sha256 존재?     │ -> VirusTotal
 └───────────────────────┘
     ↓
 (tokio::join!로 위 3갈래 동시 실행 — 없는 필드는 즉시 None 반환, 실제 호출 없음)
@@ -20,16 +20,16 @@ Playbook
 
   캐시 조회
     ├─ Hit
-    │    → 저장된 enrichment 결과 반환
+    │    -> 저장된 enrichment 결과 반환
     │
     ├─ Unavailable (Redis/Dragonfly 장애)
-    │    → Provider 호출하지 않고 CacheUnavailable 반환
+    │    -> Provider 호출하지 않고 CacheUnavailable 반환
     │
     └─ Miss (캐시에 결과가 없음)
          ↓
        Circuit Breaker 확인
          ├─ 호출 불가(Open 상태에서 쿨다운 30초 이내이거나, HalfOpen 상태에서 시험 요청이 진행 중인 상태)
-         │    → Provider 호출하지 않고 Error 반환
+         │    -> Provider 호출하지 않고 Error 반환
          │
          └─ 호출 가능
               ↓
@@ -38,31 +38,31 @@ Playbook
               │    ↓
               │  캐시 재확인
               │    ├─ Hit
-              │    │    → Lock 해제 후 저장된 결과 반환
+              │    │    -> Lock 해제 후 저장된 결과 반환
               │    │
               │    ├─ Unavailable (Redis/Dragonfly 장애)
-              │    │    → Lock 해제 후 CacheUnavailable 반환
+              │    │    -> Lock 해제 후 CacheUnavailable 반환
               │    │
               │    └─ Miss
               │         ↓
               │       Provider 호출 직전 Circuit Breaker 재확인 (쿨다운이 지나면 시험 요청 1개만 통과)
-              │         ├─ 호출 불가 → Provider 호출하지 않고 Error 반환
-              │         └─ 호출 가능 → Provider 호출
-              │                        ├─ Success  → 캐시 저장
-              │                        ├─ NotFound → 캐시 저장
-              │                        └─ 실패     → 캐시 저장하지 않음
+              │         ├─ 호출 불가 -> Provider 호출하지 않고 Error 반환
+              │         └─ 호출 가능 -> Provider 호출
+              │                        ├─ Success  -> 캐시 저장
+              │                        ├─ NotFound -> 캐시 저장
+              │                        └─ 실패     -> 캐시 저장하지 않음
               │         ↓
               │       Lock 해제 후 EnrichmentResult 반환
               │
               ├─ Lock 획득 실패 (다른 요청이 Lock을 보유 중)
               │    ↓
               │  캐시 결과를 기다림 (100ms마다 확인, 최대 3초)
-              │    ├─ Hit         → 저장된 결과 반환
-              │    ├─ Unavailable → CacheUnavailable 반환
-              │    └─ 3초 초과    → Timeout 반환
+              │    ├─ Hit         -> 저장된 결과 반환
+              │    ├─ Unavailable -> CacheUnavailable 반환
+              │    └─ 3초 초과    -> Timeout 반환
               │
               └─ Lock 시도 자체가 에러 (Redis/Dragonfly 장애)
-                   → Provider 호출하지 않고 CacheUnavailable 반환
+                   -> Provider 호출하지 않고 CacheUnavailable 반환
 
 Lock을 획득한 요청도 실제 Provider 호출 직전에 캐시를 한 번 더 확인함
 처음 캐시를 확인한 뒤 Lock을 획득하기 전에, 다른 요청이 Provider 호출을 끝내고
@@ -72,7 +72,7 @@ Lock을 획득한 요청도 실제 Provider 호출 직전에 캐시를 한 번 �
 
 요청 A                         요청 B
   │                              │
-  │ 캐시 → MISS                   │ 캐시 → MISS
+  │ 캐시 -> MISS                   │ 캐시 -> MISS
   │                              │
   │                              │ Lock 획득
   │                              │ Provider API 호출
@@ -81,7 +81,7 @@ Lock을 획득한 요청도 실제 Provider 호출 직전에 캐시를 한 번 �
   │ Lock 획득                     │
   │                              │
   │ 캐시 다시 확인                 │
-  │ → HIT                        │
+  │ -> HIT                        │
   │                              │
   └→ Provider API 호출 안 함       │
 
@@ -240,7 +240,7 @@ impl EnrichmentService {
                     };
                 }
 
-                // Lock 획득 후 캐시를 다시 확인했지만 여전히 결과가 없음 → 실제 API 호출
+                // Lock 획득 후 캐시를 다시 확인했지만 여전히 결과가 없음 -> 실제 API 호출
                 let result = self
                     .call_and_store(provider, breaker, ioc, &cache_key)
                     .await;

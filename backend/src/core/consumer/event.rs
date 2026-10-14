@@ -2,6 +2,7 @@
 //
 // 평탄화된 단일 구조체로, 이벤트 타입마다 서로 다른 필드가 존재할 수 있다는 전제를 반영
 // event_id/event_type/timestamp는 모든 이벤트가 공통으로 갖는 메타데이터라 필수 필드로 두고,
+// ingested_at은 수신 Vector가 모든 이벤트에 기록하는 수집 시각이라 필수 필드로 둔다.
 // 나머지 필드들은 그대로 보존한다.
 //
 // 추가로, Enrichment가 실제로 조사하는 3개 IOC(src_ip/dst_domain/file_sha256)만 명시적 필드로 둔다.(enrichment_iocs() 참고)
@@ -18,6 +19,9 @@ pub struct RawEvent {
     pub event_id: String, // 보안장비/센서마다 이벤트 ID 형식이 다를 수 있어 String으로 정의(예: UUID, 숫자, 문자열 등)
     pub event_type: String,
     pub timestamp: String,
+    // Shire Guard 이벤트 수집 시각: 수신 Vector가 기록한 RFC 3339 문자열 (예: 2026-10-03T10:00:01.123456789Z)
+    // log_id(sha256(event_id|ingested_at))를 만들 때 쓰므로 날짜 타입으로 바꾸지 않고 문자열 그대로 보관
+    pub ingested_at: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub src_ip: Option<String>,
@@ -65,6 +69,7 @@ mod tests {
             "event_id": "evt-1",
             "event_type": "file_download",
             "timestamp": "2026-09-08T10:15:00Z",
+            "ingested_at": "2026-09-08T10:15:00.123456789Z",
             "src_ip": "185.220.101.45",
             "dst_domain": "cdn-update-service.net",
             "file_name": "invoice_2026.exe",
@@ -75,6 +80,9 @@ mod tests {
         let event: RawEvent = serde_json::from_str(json).expect("파싱 실패");
 
         assert_eq!(event.event_id, "evt-1");
+        assert_eq!(event.ingested_at, "2026-09-08T10:15:00.123456789Z");
+        assert!(event.extra.get("ingested_at").is_none()); // 정식 필드로 파싱되어 extra에는 없음
+
         assert_eq!(event.src_ip.as_deref(), Some("185.220.101.45"));
         assert_eq!(
             event.file_sha256.as_deref(),
@@ -99,6 +107,7 @@ mod tests {
             "event_id": "evt-2",
             "event_type": "login_failure",
             "timestamp": "2026-09-08T10:17:32Z",
+            "ingested_at": "2026-09-08T12:30:44.123456789Z",
             "src_ip": "185.220.101.45",
             "username": "admin",
             "attempt_count": 12,
@@ -126,6 +135,7 @@ mod tests {
             "event_id": "evt-3",
             "event_type": "dns_beacon",
             "timestamp": "2026-09-08T12:30:44Z",
+            "ingested_at": "2026-09-08T12:30:44.123456789Z",
             "src_ip": "198.51.100.77",
             "dst_domain": "telemetry-sync.info",
             "hostname": "WKS-1183",
@@ -141,7 +151,7 @@ mod tests {
         );
     }
 
-    // 시나리오 4: 필수 메타데이터(event_id/event_type/timestamp)가 없으면 파싱이 실패
+    // 시나리오 4: 필수 메타데이터(event_id/event_type/timestamp/ingested_at)가 없으면 파싱이 실패
     #[test]
     fn missing_required_metadata_fails() {
         let json = r#"{"src_ip": "1.2.3.4"}"#;
@@ -159,6 +169,7 @@ mod tests {
             "event_id": "evt-5",
             "event_type": "port_scan",
             "timestamp": "2026-09-08T13:00:00Z",
+            "ingested_at": "2026-09-08T13:00:00.123456789Z",
             "src_ip": "10.0.0.5",
             "target_port": 22,
             "scan_type": "syn"
@@ -182,6 +193,7 @@ mod tests {
             "event_id": "evt-6",
             "event_type": "login_failure",
             "timestamp": "2026-09-08T10:17:32Z",
+             "ingested_at": "2026-09-08T10:17:32.123456789Z",
             "src_ip": "185.220.101.45",
             "username": "admin",
             "attempt_count": 12,
@@ -203,6 +215,7 @@ mod tests {
             "event_id": "evt-7",
             "event_type": "login_failure",
             "timestamp": "2026-09-08T10:17:32Z",
+            "ingested_at": "2026-09-08T10:17:32.123456789Z",
             "src_ip": "185.220.101.45",
             "username": "admin",
             "attempt_count": 12,
@@ -216,5 +229,23 @@ mod tests {
         assert!(parsed.get("dst_domain").is_none());
         assert!(parsed.get("file_sha256").is_none());
         assert_eq!(parsed.get("username"), Some(&serde_json::json!("admin")));
+        assert_eq!(
+            parsed.get("ingested_at"),
+            Some(&serde_json::json!("2026-09-08T10:17:32.123456789Z"))
+        );
+    }
+
+    // 시나리오 8: 다른 필수 필드가 있어도 ingested_at이 없으면 파싱이 실패
+    #[test]
+    fn missing_ingested_at_fails() {
+        let json = r#"{
+            "event_id": "evt-8",
+            "event_type": "login_failure",
+            "timestamp": "2026-09-08T10:17:32Z"
+        }"#;
+
+        let result: Result<RawEvent, _> = serde_json::from_str(json);
+
+        assert!(result.is_err());
     }
 }

@@ -29,6 +29,7 @@ RAW EVENT
    ├── Ollama
    │      └─ AI 분석
    │
+   │
    ▼
 OpenSearch + ClickHouse
 ```
@@ -142,11 +143,14 @@ INSERT INTO playbooks (name, nodes) VALUES (
 PUT _index_template/event-logs
 {
   "index_patterns": ["event-logs-*"],   // 인덱스 이름: event-logs-YYYY.MM.DD (날짜는 ingested_at 기준)
+                                        // 문서 _id = log_id (sha256(event_id|ingested_at)) 값이 저장됨, 중복 로그가 PUT 되면 덮어씀
   "template": {
     "settings": {
-      "number_of_shards": 1,
-      "number_of_replicas": 0,          // 단일 노드
-      "index.mapping.ignore_malformed": true  // 숫자·날짜·IP 타입이 안 맞아도 문서를 거부하지 않고 그 필드만 인덱싱 제외(이 설정이 없으면 타입 맞지 않는 필드가 있는 경우 해당 로그 하나를 통째로 날리게 됨)
+      "number_of_shards": 4,           // 성능 테스트 결과 초당 10만 insert 성능을 보여준 최소 설정값  
+      "number_of_replicas": 0,          // 단일 노드이므로 0 세팅
+      "index.mapping.ignore_malformed": true,  // 숫자·날짜·IP 타입이 안 맞아도 문서를 거부하지 않고 그 필드만 인덱싱 제외(이 설정이 없으면 타입 맞지 않는 필드가 있는 경우 해당 로그 하나를 통째로 날리게 됨)
+       "refresh_interval": "30s", // 새 문서를 검색할 수 있게 만드는 주기를 기본값 1s → 30s로 늘려, 문서 저장 성능 향상
+       "translog.flush_threshold_size": "1024mb" // Translog(Transaction Log: 인덱싱 작업을 기록하는 로그) 크기 임계값을 기본값 512MB에서 1024MB로 높여 Flush 빈도를 줄이고 인덱싱 성능을 개선
     },
     "mappings": {
       "dynamic_templates": [
@@ -166,8 +170,8 @@ PUT _index_template/event-logs
         "file_sha256":     { "type": "keyword", "ignore_above": 1024 }, // 파일 SHA-256
         "file_size_bytes": { "type": "long" },                           // 파일 크기(byte)
 
-        // ── 백엔드가 찍는 값 ──
-        "ingested_at":     { "type": "date" },                           // 백엔드 처리 시작 시각
+        // ── 시스템이 찍는 값 ──
+        "ingested_at":     { "type": "date" },                              // 수집 시각 (수신 Vector가 기록)
 
         // ── enrichment (나머지 필드는 동적 매핑) ──
         "enrichment_dst_domain": { "properties": { "data": { "properties": {
@@ -205,15 +209,19 @@ PUT _index_template/event-logs
 ### clickhouse
 ```sql
 CREATE TABLE IF NOT EXISTS shire.event_logs (
-    event_id         String,                            -- 이벤트 ID (클릭하우스는 일반 RDBMS와 다르므로 별도 id 컬럼 사용 안함)
-    event_type       LowCardinality(String),            -- 이벤트 종류 (file_download 등)
-    event_time       DateTime64(3, 'UTC'),              -- 이벤트 발생 시각 (timestamp 파싱값)
-    ingested_at      DateTime64(3, 'UTC'),              -- 백엔드 처리 시작 시각 (OpenSearch의 ingested_at과 같은 값)
-    playbook_action  LowCardinality(Nullable(String)),  -- 플레이북 최종 결정: DENY / DETECT / HOLD (결정한 플레이북이 없으면 NULL)
-    payload          JSON                               -- 원본 + enrichment + playbook_result 전체 (OpenSearch 문서와 동일)
-) ENGINE = MergeTree
-PARTITION BY toYYYYMM(event_time)                        -- 월 단위 파티션
-ORDER BY (event_type, event_time, event_id);             -- 정렬 키
+    log_id   String,                                  -- 로그 ID: sha256(event_id + ingested_at), 중복 판단 기준 (OpenSearch _id와 같은 값)
+    payload  JSON(                                    -- 원본 + enrichment + playbook_result 전체 (OpenSearch 문서와 동일)
+        -- 자주 조회되거나 파티션, 정렬 키에 사용하는 JSON 경로에 타입 힌트를 지정
+        -- 타입 힌트가 지정된 컬럼은 조회 시 전체 JSON을 다시 파싱하지 않고 해당 subcolumn을 직접 읽어 조회 성능을 높일 수 있음
+        ingested_at              DateTime64(9, 'UTC'),    -- 수집 시각 (수신 Vector가 기록, 파티션·정렬 키에 사용)
+        event_id                 String,                  -- 이벤트 ID (같은 이벤트의 로그가 여러 건일 수 있음)
+        event_type               LowCardinality(String),  -- 이벤트 종류 (file_download 등)
+        `playbook_result.action` LowCardinality(Nullable(String))   -- 플레이북 최종 결정: DENY / DETECT / HOLD (결정 없으면 NULL)
+    )
+) ENGINE = ReplacingMergeTree                         -- 같은 log_id는 병합 시 하나만 남김 (정확한 조회는 FINAL)
+PARTITION BY toYYYYMM(payload.ingested_at)            -- 월 단위 파티션 (OpenSearch 인덱스와 같은 수집 시각 기준)
+ORDER BY (payload.ingested_at, log_id);               -- 정렬 키 = 중복 판단 기준, ingested_at이 앞이라 시간 범위 조회에 유리
+
 ```
 
 
@@ -237,11 +245,25 @@ ORDER BY (event_type, event_time, event_id);             -- 정렬 키
   - Redis/Dragonfly 조회 장애면 Ollama를 호출하지 않고 cache_unavailable 에러 반환
   - 없으면 Ollama 호출 (캐시 키가 같은 요청은 1번만 호출, 동시 호출 1개로 제한) 후 정상 응답만 7일 저장
   - 요청 하나의 전체 시간 상한 60초, 초과 시 timeout 에러
-  - 키: `sha256(model + prompt + Evidence(원본 + enrichment 결과), event_id·timestamp 제외)`
+  - 키: `sha256(model + prompt + Evidence(원본 + enrichment 결과), event_id·timestamp·ingested_at 제외)`
 
 ### 4) 최종적으로 OpenSearch와 ClickHouse에 저장되는 로그
 - 결정한 플레이북이 없는 경우: 원본 로그
 - 결정한 플레이북이 1개 이상인 경우: 원본 로그 + `playbook_result`
+- 저장 경로: 백엔드 → OpenSearch / ClickHouse
+- 로그 ID: `log_id = sha256(event_id|ingested_at)`
+  - 플레이북 로그를 저장하는 OpenSearch / ClickHouse에 중복된 로그가 전달될 경우 log_id로 중복 방지 가능
+  - 예를 들어 백엔드 장애로 같은 Kafka 메시지를 다시 처리하면 `log_id`가 같아 중복 제거됨
+    - OpenSearch: `_id = log_id`로 덮어씀 (즉시)
+    - ClickHouse: log_id 컬럼이 ReplacingMergeTree가 병합 시 정리됨, 정확한 조회는 `FINAL` 사용
+      - ClickHouse 백그라운드 스케쥴링으로 중복된 row는 최신 row 말고 제거 진행됨
+        - 관련 쿼리) OPTIMIZE TABLE shire.event_logs FINAL; -- 즉시 병합
+        - 관련 쿼리) SETTINGS min_age_to_force_merge_seconds = 3600   -- 1시간 지난 파트는 강제로 병합
+
+- 시각 필드
+  - `timestamp`: 이벤트 발생 시각 (발신 측 원본 값)
+  - `ingested_at`: 이벤트 수집 시각 (수신 Vector가 기록)
+  - `playbook_result.processed_at`: 플레이북 판정 시각
 
 ### 5) 플레이북 API
 - 신규 생성 → Postgres insert → 캐시 갱신(refresh)
@@ -327,7 +349,7 @@ ORDER BY (event_type, event_time, event_id);             -- 정렬 키
   - AI 에러 발생 시 매핑과 무관하게 HOLD 처리
   - 매핑값: DENY | HOLD | DETECT
 
-- 입력: prompt는 system 메시지로, Evidence(원본 + enrichment, event_id·timestamp 제외)는 user 메시지로 전달 (분석 지침과 분석 대상 데이터를 구분)
+- 입력: prompt는 system 메시지로, Evidence(원본 + enrichment, event_id·timestamp·ingested_at 제외)는 user 메시지로 전달
 - temperature 0 적용 (같은 입력에는 같은 답이 나오도록 함)
 - model은 호출할 모델(AiModel enum, 허용 목록 2개)을 지정하는 값임
 - actions 매핑은 모델에 전달하지 않음

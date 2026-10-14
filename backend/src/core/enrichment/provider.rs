@@ -46,9 +46,9 @@ pub trait EnrichmentProvider: Send + Sync {
     type Output: Serialize + DeserializeOwned + Clone + Send + Sync;
 
     // Redis 키(enrichment:{name}:{ioc})와 로그에 쓰이는 식별자
-    // 예: name="abuseipdb", ioc="185.220.101.45" → enrichment:abuseipdb:185.220.101.45
-    //     name="dns", ioc="cdn-update-service.net" → enrichment:dns:cdn-update-service.net
-    //     name="virustotal", ioc="e3b0c442..." → enrichment:virustotal:e3b0c442...
+    // 예: name="abuseipdb", ioc="185.220.101.45" -> enrichment:abuseipdb:185.220.101.45
+    //     name="dns", ioc="cdn-update-service.net" -> enrichment:dns:cdn-update-service.net
+    //     name="virustotal", ioc="e3b0c442..." -> enrichment:virustotal:e3b0c442...
     fn name(&self) -> &'static str;
 
     fn ttl_seconds(&self) -> u64;

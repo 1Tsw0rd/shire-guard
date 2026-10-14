@@ -53,10 +53,10 @@ impl IntoResponse for AppError {
              ?: 구조체 타입 및 쌍따옴표까지 포함하여 출력(Debug)
 
              tracing::error!(error = %msg, "internal server error");
-             // 대략 이런 느낌 → error=connection timed out
+             // 대략 이런 느낌 -> error=connection timed out
 
              tracing::error!(error = ?msg, "internal server error");
-             // 대략 이런 느낌 → error=Database("connection timed out")  (구조까지)
+             // 대략 이런 느낌 -> error=Database("connection timed out")  (구조까지)
             */
             tracing::error!(error = %msg, "internal server error");
         }

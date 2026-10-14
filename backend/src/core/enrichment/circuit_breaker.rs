@@ -27,11 +27,11 @@
 
 // 멀티스레드 동시성 제어용 원자적(Atomic) 타입 및 메모리 오더링
 // 개념 보충설명:
-// Lock     → 한 번에 하나의 스레드만 특정 코드 영역에 접근하도록 제한
+// Lock     -> 한 번에 하나의 스레드만 특정 코드 영역에 접근하도록 제한
 //
-// Atomic   → CPU 수준에서 데이터 경합(Data Race)을 막아주어, 여러 스레드가 동시에 접근해도 원자적으로 값을 변경할 수 있는 특수 정수 타입
+// Atomic   -> CPU 수준에서 데이터 경합(Data Race)을 막아주어, 여러 스레드가 동시에 접근해도 원자적으로 값을 변경할 수 있는 특수 정수 타입
 //
-// Ordering → 다른 스레드들이 "사용중/사용안함" 같은 상태 변경을
+// Ordering -> 다른 스레드들이 "사용중/사용안함" 같은 상태 변경을
 //            일관된 순서와 가시성으로 인식하도록 하는 메모리 접근 규칙
 use std::sync::atomic::{
     AtomicU8, // 1바이트
@@ -378,7 +378,7 @@ mod tests {
     fn opened_at_is_not_reset_after_already_open() {
         let breaker = CircuitBreaker::new(1, Duration::from_secs(30));
 
-        breaker.record_failure(); // Closed → Open, opened_at 최초 기록
+        breaker.record_failure(); // Closed -> Open, opened_at 최초 기록
         assert_eq!(breaker.state(), CircuitState::Open);
         let first_opened_at = breaker.opened_at_nanos();
         assert_ne!(first_opened_at, 0); // 최초 기록은 0보다 커야 함

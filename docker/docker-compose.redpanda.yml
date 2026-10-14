@@ -48,7 +48,7 @@ services:
       # 개발 환경에 적합한 기본값들을 한 번에 적용해줌 (Kafka엔 없는 RedPanda만의 편의 기능)
       #
       # 주의: 이 프리셋엔 토픽 자동 생성(auto-create)이 켜져 있음
-      # Kafka는 KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"로 명시적으로 꺼뒀지만
+      # Kafka는 KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"로 명시해 켜두었고,
       # RedPanda는 별도 설정 없이 dev-container만 써도 Producer(Vector)가
       # 존재하지 않는 토픽에 처음 메시지를 보내는 순간 자동으로 토픽이 생성됨
       # (실제로 rpk topic create를 안 쳤는데도 test_topic이 자동 생성된 것으로 확인)
@@ -57,6 +57,14 @@ services:
       - "1"
       # 사용할 CPU 코어 개수를 1개로 제한
       # RedPanda는 코어마다 별도 스레드를 쓰는 구조라, 로컬 개발 환경에서는 코어를 다 쓰면 오히려 낭비라서 1개로 제한해두는 것
+
+      # 아래 설정들은 클러스터 속성이라 데이터가 없는 첫 시작에만 적용됨, 이후 변경은 rpk cluster config set 사용
+      - --set
+      - redpanda.default_topic_partitions=1
+      # 자동 생성되는 토픽의 기본 partition 수 (기본값 1)
+      - --set
+      - redpanda.log_retention_ms=604800000
+      # 메시지 보관 기간 설정 (기본값 7일은 604800000ms), Rust가 멈춰도 이 기간 안에 재시작하면 commit 위치부터 이어서 처리
 
     healthcheck:
       test: ["CMD", "rpk", "cluster", "health", "--exit-when-healthy"]

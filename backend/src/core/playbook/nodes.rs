@@ -2,7 +2,7 @@
 nodes.rs: 플레이북 설정 타입 (Postgres playbooks.nodes JSONB를 파싱한 결과)
 
 이 파일이 하는 일
-- 플레이북 설정의 "모양"을 정의하고(파싱), 저장·로드 전에 구조를 "검증"함
+- 플레이북 설정의 "모양"을 정의하고(파싱), 저장/로드 전에 구조를 "검증"함
 - 조건 평가는 condition.rs, 플레이북 실행과 다수결은 engine.rs에서 함
 
 플레이북 구조
@@ -16,7 +16,7 @@ nodes.rs: 플레이북 설정 타입 (Postgres playbooks.nodes JSONB를 파싱�
   2. 대응 노드 (Node::Response)
      - action(Action): DENY | DETECT | HOLD
   3. AI 대응 노드 (Node::AiResponse)
-     - model(AiModel), prompt, actions(RiskActions: risk → action)
+     - model(AiModel), prompt, actions(RiskActions: risk -> action)
      - actions에 없는 risk는 해당 없음
 
 조건식 (Expr)
@@ -27,7 +27,7 @@ nodes.rs: 플레이북 설정 타입 (Postgres playbooks.nodes JSONB를 파싱�
   Action       플레이북/노드가 내리는 결정 (DENY | DETECT | HOLD)
   Risk         AI가 판단하는 위험도 (HIGH | MEDIUM | LOW)
   AiModel      사용할 수 있는 AI 모델 (Ollama 태그)
-  RiskActions  AI 대응 노드의 risk → action 매핑
+  RiskActions  AI 대응 노드의 risk -> action 매핑
   Op           조건 연산자 (eq, gte, contains, in_cidr ...)
   Condition    조건 하나
   Expr         조건식 (and / or / 조건)
@@ -361,7 +361,7 @@ mod tests {
         assert!(parse(r#"[ { "type": "response", "action": "DENY" } ]"#).is_ok());
     }
 
-    // 시나리오 3: AI 대응 노드가 파싱되고, risk → action 매핑을 조회할 수 있다
+    // 시나리오 3: AI 대응 노드가 파싱되고, risk -> action 매핑을 조회할 수 있다
     #[test]
     fn parses_ai_response_actions() {
         let pb = parse(

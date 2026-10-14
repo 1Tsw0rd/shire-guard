@@ -18,7 +18,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "macros", "json"] }
-tokio = { version = "1.53.1", features = ["full"] }
+tokio = { version = "1.53.1", features = ["full", "test-util"] }
 tower-http = { version = "0.7.1", features = ["trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
@@ -29,3 +29,74 @@ validator = { version = "0.21.0", features = ["derive"] }
 http-body-util = "0.1.5"
 serde_json = "1.0.151"
 tower = { version = "0.5.3", features = ["util"] }
+
+# release 빌드 최적화: 빌드 시간은 늘지만 실행 성능 향상
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+# ── LTO (Link-Time Optimization) ─────────────────────
+# 다른 크레이트(라이브러리)에 있는 함수까지 함께 분석하여 컴파일러가 최적화할 기회를 늘려줌
+#
+# 인라인: 
+# - 함수 호출 위치에 함수 내용을 넣어 함수 호출 비용을 줄이고, 주변 코드까지 추가로 최적화할 기회를 제공함
+#
+# [인라인 전]
+# fn is_large(size: u64) -> bool {
+#     size > 100
+# }
+#
+# fn main() {
+#     let size = 200;
+#
+#     if is_large(size) {
+#         println!("Large event");
+#     }
+# }
+#
+# main() ── is_large() 호출 ──> true 반환
+#  │
+#  ▼
+# if 조건 확인
+#   │
+#   ▼
+# println!
+#
+# [인라인 적용]
+# fn main() {
+#     let size = 200;
+#
+#     if size > 100 {
+#         println!("Large event");
+#     }
+# }
+#
+# main()
+#   │
+#   ▼
+# size > 100 직접 계산
+#   │
+#   ▼
+# println!
+#
+# LTO는 다른 크레이트의 함수에도 이러한 최적화를 적용할 기회를 늘림
+#
+# lto 옵션:
+# false  : 기본값, 크레이트 간 LTO를 수행하지 않으며 설정에 따라 크레이트 내부 최적화는 가능
+# "off"  : LTO를 완전히 비활성화
+# "thin" : 여러 크레이트를 대상으로 Thin LTO를 수행. 비교적 빠르게 최적화
+# "fat"  : 여러 크레이트를 더 포괄적으로 분석하여 최적화하지만, 빌드 시간이 더 길어질 수 있음
+# true   : "fat"과 동일
+#
+# ── codegen-units = 1 ────────────────────────────────
+# 크레이트를 합치는 것이 아니라, 각 크레이트의 코드를 기계어로 생성하는 단위를 1개로 설정하여 최적화 범위를 넓힘
+#
+#  여러 단위                     1개 단위
+#  ┌─────┐ ┌─────┐ ┌─────┐      ┌───────────────┐
+#  │ A+B │ │ C+D │ │ E+F │  ->   │ A+B+C+D+E+F   │
+#  └─────┘ └─────┘ └─────┘      └───────────────┘
+#    단위별로 처리                  한 단위로 처리
+#
+# 여러 단위: 병렬 컴파일에 유리하지만 단위 사이의 최적화가 제한될 수 있음
+# 1개 단위: 같은 크레이트의 코드를 폭넓게 분석하여 인라인 및 추가 최적화 기회 확보
+# 단, 컴파일 시간이 늘어날 수 있음

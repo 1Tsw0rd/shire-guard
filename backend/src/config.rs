@@ -55,6 +55,12 @@ pub struct AppConfig {
 
     // Playbook AI (Ollama)
     pub ollama_base_url: String,
+    // 이벤트 로그 저장소
+    pub opensearch_url: String,
+    pub clickhouse_url: String,
+    pub clickhouse_db: String,
+    pub clickhouse_user: String,
+    pub clickhouse_password: String,
 }
 
 impl AppConfig {
@@ -100,6 +106,31 @@ impl AppConfig {
                 })?;
                 format!("http://localhost:{port}")
             },
+
+            // Rust는 호스트에서 실행되므로 OpenSearch/ClickHouse는 localhost의 매핑된 포트로 접속
+            opensearch_url: {
+                let port = std::env::var("OPENSEARCH_PORT").map_err(|_| {
+                    AppError::Internal("OPENSEARCH_PORT 환경변수가 설정되지 않았습니다.".into())
+                })?;
+                format!("http://localhost:{port}")
+            },
+            clickhouse_url: {
+                let port = std::env::var("CLICKHOUSE_HTTP_PORT").map_err(|_| {
+                    AppError::Internal(
+                        "CLICKHOUSE_HTTP_PORT 환경변수가 설정되지 않았습니다.".into(),
+                    )
+                })?;
+                format!("http://localhost:{port}")
+            },
+            clickhouse_db: std::env::var("CLICKHOUSE_DB").map_err(|_| {
+                AppError::Internal("CLICKHOUSE_DB 환경변수가 설정되지 않았습니다.".into())
+            })?,
+            clickhouse_user: std::env::var("CLICKHOUSE_USER").map_err(|_| {
+                AppError::Internal("CLICKHOUSE_USER 환경변수가 설정되지 않았습니다.".into())
+            })?,
+            clickhouse_password: std::env::var("CLICKHOUSE_PASSWORD").map_err(|_| {
+                AppError::Internal("CLICKHOUSE_PASSWORD 환경변수가 설정되지 않았습니다.".into())
+            })?,
         })
     }
 }
@@ -120,7 +151,7 @@ impl BrokerConfig {
 
         let (broker, brokers) = Self::resolve(
             &broker_type,
-            kafka_host.as_deref(), // Option<String> → Option<&str>
+            kafka_host.as_deref(), // Option<String> -> Option<&str>
             kafka_external_port.as_deref(),
             redpanda_host.as_deref(),
             redpanda_port.as_deref(),

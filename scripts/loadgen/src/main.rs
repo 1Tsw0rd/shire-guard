@@ -1,4 +1,5 @@
 // ./loadgen.exe file_download 7100000 15000 1000 --reps 5 --cooldown 10 --case malicious
+// ./loadgen.exe login_failure 4000000 10 10 --case safe --votes D1,D2,H1
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,6 +35,12 @@ enum Case {
   --case malicious  AbuseIPDB score 100, VirusTotal EICAR(악성 다수 탐지)인 IOC 사용
   기본값은 malicious
 
+다수결 테스트:
+  --votes D1,D2,H1  이벤트에 test_votes 필드를 넣음
+  [TEST] 플레이북이 이 값에 자기 코드가 들어 있으면 결정을 냄
+    D1, D2 → DENY / H1, H2 → HOLD / T1, T2 → DETECT
+  시드 플레이북(file_download 대상)과 섞이지 않도록 login_failure --case safe로 보내는 것을 권장
+
 반복 테스트:
   --reps 5로 실행하면 같은 프로세스와 HTTP Client를 유지한 채
   Run을 5회 반복합니다. 각 Run의 시작 event_id는 count만큼 증가합니다.
@@ -45,6 +52,9 @@ enum Case {
 
   # 안전 케이스 IOC로 login_failure 100건 순차 전송
   loadgen.exe login_failure 1 100 1 --case safe
+
+  # 다수결 테스트: DENY 2 + HOLD 1 → 최종 DENY 기대
+  loadgen.exe login_failure 4000000 10 10 --case safe --votes D1,D2,H1
 "
 )]
 struct Args {
@@ -76,9 +86,13 @@ struct Args {
     /// 테스트 케이스: safe(정상) 또는 malicious(악성)
     #[arg(long, value_enum, default_value_t = Case::Malicious)]
     case: Case,
+
+    /// 다수결 테스트용: 이벤트에 test_votes 필드로 넣을 값 (예: "D1,D2,H1")
+    #[arg(long)]
+    votes: Option<String>,
 }
 
-fn build_payload(event_type: &str, id: u64, case: &Case) -> Value {
+fn build_payload(event_type: &str, id: u64, case: &Case, votes: Option<&str>) -> Value {
     let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let event_id = format!("evt-{id}");
 
@@ -88,7 +102,7 @@ fn build_payload(event_type: &str, id: u64, case: &Case) -> Value {
         Case::Malicious => "144.48.243.18",
     };
 
-    match event_type {
+    let mut payload = match event_type {
         "file_download" => {
             // VirusTotal로 실제 확인해둔 고정 해시 (대부분 undetected vs EICAR 악성 다수 탐지)
             let file_sha256 = match case {
@@ -127,7 +141,14 @@ fn build_payload(event_type: &str, id: u64, case: &Case) -> Value {
             "request_interval_seconds": 60
         }),
         other => panic!("알 수 없는 event_type: {other}"),
+    };
+
+    // 다수결 테스트용 필드: [TEST] 플레이북이 이 값으로 결정을 냄
+    if let Some(v) = votes {
+        payload["test_votes"] = json!(v);
     }
+
+    payload
 }
 
 async fn run_once(
@@ -139,8 +160,13 @@ async fn run_once(
     let end = start + args.count - 1;
 
     println!(
-        "── Run: evt-{} ~ evt-{} (총 {}건, 동시 {}, 케이스 {:?}) ──",
-        start, end, args.count, args.parallel, args.case
+        "── Run: evt-{} ~ evt-{} (총 {}건, 동시 {}, 케이스 {:?}, votes {}) ──",
+        start,
+        end,
+        args.count,
+        args.parallel,
+        args.case,
+        args.votes.as_deref().unwrap_or("-")
     );
 
     let success = Arc::new(AtomicUsize::new(0));
@@ -155,13 +181,14 @@ async fn run_once(
         let event_type = args.event_type.clone();
         let url = args.url.clone();
         let case = args.case.clone();
+        let votes = args.votes.clone();
         let success = success.clone();
         let fail = fail.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
 
-            let payload = build_payload(&event_type, id, &case);
+            let payload = build_payload(&event_type, id, &case, votes.as_deref());
 
             match client.post(&url).json(&payload).send().await {
                 Ok(resp) if resp.status().is_success() => {

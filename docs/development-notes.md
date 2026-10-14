@@ -738,7 +738,7 @@ Kafka/RedPanda Consumer와 HTTP API 서버 역할을 함께 수행하는 Rust �
 
 ```bash
 cd backend
-cargo run
+cargo run --release
 ```
 
 ### 2. 확인
