@@ -62,22 +62,9 @@ EXCEPTION
 END;
 $$ LANGUAGE plpgsql STABLE STRICT;
 
-
 -- 트리거 설정
 DROP TRIGGER IF EXISTS tr_playbooks_updated_at ON playbooks;
 
 CREATE TRIGGER tr_playbooks_updated_at
     BEFORE UPDATE ON playbooks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
-
-
-CREATE FUNCTION bytea_to_text_safe(b BYTEA)
-RETURNs TEXT AS $$
-BEGIN
-    RETRUN convert_from(b, 'UTF8');
-EXCEPTION
-    WHEN character_not_in_repertoire THEN
-        RETURN encode(b, 'escape');
-END;
-$$ LANGUAGE plpgsql IMMUTABLE STRICT
