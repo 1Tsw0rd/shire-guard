@@ -38,11 +38,11 @@ Kafka commit
 429/5xx -> 그 문서만 재시도
 그 외   -> 설정·환경 문제로 보고 에러 로그 후 재시도
 요청 자체 실패 -> 남은 문서 전체 재시도
-                            │
+    ↓│
 2. ClickHouse INSERT (OpenSearch에 저장된 로그만, 실패하면 전체 재시도)
-                                   │
+    ↓
 3. PostgreSQL storage_failures (거절된 로그가 있을 때만, 실패하면 재시도)
-                                   │
+    ↓
 4. 지표 갱신
 
 - 결과: 모든 로그는 "OpenSearch·ClickHouse 둘 다 저장" 또는 "둘 다 없이 storage_failures에 기록" 중 하나

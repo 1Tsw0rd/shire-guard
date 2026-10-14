@@ -1,4 +1,4 @@
--- 샘플 플레이북 (개발·데모용, 첫 기동 시 1회 실행)
+-- 샘플 플레이북 (개발 및 데모용, 첫 기동 시 1회 실행)
 INSERT INTO playbooks (name, description, enabled, nodes) VALUES
 (
   'Enrichment 조회 실패 이벤트 보류',

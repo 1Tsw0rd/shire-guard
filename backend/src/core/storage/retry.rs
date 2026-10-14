@@ -1,7 +1,7 @@
 /*
 DB 저장 재시도 기능
 - 대기 간격은 RETRY_INITIAL_DELAY(0.1초)부터 2배씩 늘어나 RETRY_MAX_DELAY(30초)에서 멈추고, 이후 30초 간격으로 성공할 때까지 계속 재시도 (재시도 횟수 제한 없음)
-- forwarder.rs(OpenSearch·ClickHouse 저장)와 failures.rs(PostgreSQL 실패 로그 저장)가 함께 사용
+- forwarder.rs(OpenSearch와 ClickHouse 저장)와 failures.rs(PostgreSQL 실패 로그 저장)가 함께 사용
 */
 
 use std::time::Duration;

@@ -96,7 +96,7 @@ impl OpenSearchClient {
         index: &str,
         query: &serde_json::Value,
     ) -> Result<serde_json::Value, AppError> {
-        // 본문이 있는 GET은 일부 HTTP 클라이언트·프록시가 본문을 버리기 때문에 GET 대신 POST로 처리
+        // 본문이 있는 GET은 일부 HTTP 클라이언트와 프록시가 본문을 버리기 때문에 GET 대신 POST로 처리
         let request = self
             .http
             .post(format!("{}/{}/_search", self.base_url, index))

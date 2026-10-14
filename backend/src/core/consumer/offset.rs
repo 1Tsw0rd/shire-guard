@@ -1,5 +1,5 @@
 /*
-Kafka/RedPanda offset 추적기: OpenSearch·ClickHouse 저장이 끝난 로그까지만 kafka/redpanda commit 위치를 앞으로 옮김
+Kafka/RedPanda offset 추적기: OpenSearch와 ClickHouse 저장이 끝난 로그까지만 kafka/redpanda commit 위치를 앞으로 옮김
 
 이벤트 처리 Task(kafka.rs)는 병렬로 돌고 Batch도 동시에 저장되므로, 저장 완료 순서가 수신 순서와 다름
 뒤쪽 offset이 먼저 끝나도 앞쪽 offset이 남아 있으면 commit 위치를 옮기지 않음
@@ -298,7 +298,7 @@ mod tests {
 
     // 시나리오 6: 재할당 후 이전 할당의 Task가 같은 offset 완료를 늦게 보내도 유실은 없음
     // finish()는 저장이 모두 끝난 뒤에만 호출되므로, 이전 Task의 완료도 해당 로그가 이미 저장됐다는 뜻
-    // 새 Task가 같은 로그를 다시 저장해도 log_id(OpenSearch _id·ClickHouse log_id 컬럼)로 중복이 제거됨
+    // 새 Task가 같은 로그를 다시 저장해도 log_id(OpenSearch _id와 ClickHouse log_id 컬럼)로 중복이 제거됨
     #[test]
     fn late_finish_from_previous_assignment_is_safe() {
         let mut tracker = tracker_with(0, &[5, 6]);

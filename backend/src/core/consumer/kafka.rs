@@ -22,8 +22,8 @@
 //      └── 실패 -> 원문과 사유를 PostgreSQL storage_failures에 보관
 //
 // Kafka offset commit:
-// 메시지를 받으면 offset 추적기(offset.rs)에 등록하고, OpenSearch·ClickHouse 저장이 끝난 offset까지만 commit 위치로 저장
-// (빈 메시지·역직렬화 실패·저장 로그 직렬화 실패는 원문과 사유를 PostgreSQL storage_failures에 보관한 뒤 완료 처리)
+// 메시지를 받으면 offset 추적기(offset.rs)에 등록하고, OpenSearch와 ClickHouse 저장이 끝난 offset까지만 commit 위치로 저장
+// (빈 메시지, 역직렬화 실패, 저장 로그 직렬화 실패는 원문과 사유를 PostgreSQL storage_failures에 보관한 뒤 완료 처리)
 // librdkafka 자동 offset 저장(enable.auto.offset.store)은 끄고, 브로커 commit은 librdkafka가 주기적으로 수행
 
 use std::sync::{Arc, Mutex};
@@ -266,7 +266,7 @@ Consumer가 처리할 수 없는 메시지 보관: 빈 메시지, RawEvent 역�
 (저장이 끝나야 commit되므로 버려지는 메시지 없음, 담당자는 storage_failures에서 원인 확인)
 
 log_id: kafka-{topic}-{partition}-{offset}
-- event_id·ingested_at을 얻을 수 없으므로 Kafka 위치로 생성 (해싱하지 않아 사람이 읽을 수 있음)
+- event_id와 ingested_at을 얻을 수 없으므로 Kafka 위치로 생성 (해싱하지 않아 사람이 읽을 수 있음)
 - 재처리로 같은 메시지가 다시 실패해도 같은 값이라 한 건만 유지
 */
 pub struct ConsumerFailures {

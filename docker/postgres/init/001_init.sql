@@ -20,14 +20,14 @@ CREATE TABLE IF NOT EXISTS playbooks (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()  -- 수정 시각
 );
 
--- 이벤트 처리 과정에서 OpenSearch·ClickHouse에 저장하지 못한 로그 보관
--- 1. OpenSearch가 document 자체 문제(400)로 거절한 로그      -> log_id: OpenSearch _id·ClickHouse log_id와 같은 값
+-- 이벤트 처리 과정에서 OpenSearch와 ClickHouse에 저장하지 못한 로그 보관
+-- 1. OpenSearch가 document 자체 문제(400)로 거절한 로그      -> log_id: OpenSearch _id와 ClickHouse log_id와 같은 값
 -- 2. Consumer가 처리할 수 없는 메시지(빈 메시지, 역직렬화 실패 등) -> log_id: kafka-{topic}-{partition}-{offset}
 -- 재처리로 같은 로그가 다시 실패해도 log_id PK로 한 건만 유지 (INSERT ... ON CONFLICT (log_id) DO NOTHING)
 CREATE TABLE IF NOT EXISTS storage_failures (
     log_id          TEXT PRIMARY KEY,                -- 1번: sha256(event_id|ingested_at), 2번: kafka-{topic}-{partition}-{offset}
     reason          TEXT NOT NULL,                   -- 실패 사유 (OpenSearch error.reason, 역직렬화 에러 메시지 등)
-    payload         BYTEA NOT NULL,                  -- 저장하려던 로그 원문 (데이터를 문자열로 해석하지 않고 바이트 그대로 저장, 깨진 JSON·NUL·잘못된 UTF-8도 저장됨, 빈 메시지는 빈 바이트)
+    payload         BYTEA NOT NULL,                  -- 저장하려던 로그 원문 (데이터를 문자열로 해석하지 않고 바이트 그대로 저장, 깨진 JSON/NUL/잘못된 UTF-8도 저장됨, 빈 메시지는 빈 바이트)
     kafka_partition INTEGER NOT NULL,                -- 원본 이벤트의 Kafka 위치 (추적용)
     kafka_offset    BIGINT NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW() -- UTC로 저장, 조회 시 세션 시간대로 표시, 예: 2026-10-07 00:10:01.501+00

@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS shire.event_logs (
         -- 자주 조회되거나 파티션, 정렬 키에 사용하는 JSON 경로에 타입 힌트를 지정
         -- 타입 힌트가 지정된 경로는 타입이 고정된 subcolumn으로 저장되어 전용 컬럼과 같은 성능으로 조회됨
         -- (힌트가 없는 경로는 타입이 정해지지 않은 Dynamic으로 저장되어 상대적으로 느림)
-        ingested_at              DateTime64(9, 'UTC'),    -- 수집 시각 (수신 Vector가 기록, 파티션·정렬 키에 사용), 예: 2026-10-07T00:10:01.123456789Z
+        ingested_at              DateTime64(9, 'UTC'),    -- 수집 시각 (수신 Vector가 기록, 파티션/정렬 키에 사용), 예: 2026-10-07T00:10:01.123456789Z
         event_id                 String,                  -- 이벤트 ID (같은 이벤트의 로그가 여러 건일 수 있음)
         event_type               LowCardinality(String),  -- 이벤트 종류 (file_download 등)
         `playbook_result.action` LowCardinality(Nullable(String))   -- 플레이북 최종 결정: DENY / DETECT / HOLD (결정 없으면 NULL)
