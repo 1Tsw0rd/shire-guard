@@ -71,10 +71,10 @@ encoding.codec = "json"
 # 현재 규모(15,000건/run, 단일 브로커, RF=1)에서는 기본값 사용
 # (TODO 대규모 지속 부하 테스트 시 재검토)
 #[sinks.kafka_out.librdkafka_options]
-#"linger.ms" = "20"              # default 5ms → 더 오래 모아 더 큰 batch 구성
-#"batch.size" = "2000000"        # default 1MB → producer batch 최대 2MB
-#"compression.type" = "lz4"      # default none → Kafka batch 압축 → 네트워크 전송량 감소
-#"enable.idempotence" = "true"   # default false → 재시도 시 중복 전송 방지(acks와 함께 사용 불가)
+#"linger.ms" = "20"              # default 5ms -> 더 오래 모아 더 큰 batch 구성
+#"batch.size" = "2000000"        # default 1MB -> producer batch 최대 2MB
+#"compression.type" = "lz4"      # default none -> Kafka batch 압축 -> 네트워크 전송량 감소
+#"enable.idempotence" = "true"   # default false -> 재시도 시 중복 전송 방지(acks와 함께 사용 불가)
 #"acks" = "1"  # default -1/all
 
 #[sinks.redpanda_out.librdkafka_options]
@@ -119,7 +119,7 @@ inputs = ["internal_metrics"]
 address = "0.0.0.0:9598"
 
 # ── Sink Buffer 설정  ──────────────────────────────────────────────────
-# block + ack를 함께 쓰는 이유: 이벤트를 버리지 않고, Kafka 저장이 확인된 것만 성공으로 응답 → 유실 방지
+# block + ack를 함께 쓰는 이유: 이벤트를 버리지 않고, Kafka 저장이 확인된 것만 성공으로 응답 -> 유실 방지
 # - block: 버퍼가 가득 차면 새 이벤트를 받지 않고 기다림 (버리지 않음)
 # - ack:   Kafka가 실제로 저장한 뒤에만 보낸 쪽에 200 응답 (저장 실패 시 이벤트를 보낸 쪽에 에러 응답하여 재시도하게 유도)
 

@@ -151,7 +151,7 @@ impl BrokerConfig {
 
         let (broker, brokers) = Self::resolve(
             &broker_type,
-            kafka_host.as_deref(), // Option<String> → Option<&str>
+            kafka_host.as_deref(), // Option<String> -> Option<&str>
             kafka_external_port.as_deref(),
             redpanda_host.as_deref(),
             redpanda_port.as_deref(),

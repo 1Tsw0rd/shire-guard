@@ -2,9 +2,10 @@
 저장하지 못한 로그를 PostgreSQL의 storage_failures 테이블에 insert
 
 보관 대상과 log_id:
-- OpenSearch가 문서 자체 문제(400)로 거절한 로그 → log_id = sha256(event_id|ingested_at) (OpenSearch _id·ClickHouse log_id와 같은 값)
-- Consumer가 처리할 수 없는 메시지(빈 메시지, 역직렬화 실패 등) → log_id = kafka-{topic}-{partition}-{offset}
-  (event_id·ingested_at을 얻을 수 없으므로 Kafka 위치로 생성, 재처리돼도 같은 값이라 한 건만 유지)
+- OpenSearch가 문서 자체 문제(400)로 거절한 로그의 log_id = sha256(event_id|ingested_at)로 적용
+  (OpenSearch _id 와 ClickHouse log_id와 같은 값)
+- Consumer가 처리할 수 없는 메시지(빈 메시지, 역직렬화 실패 등)의 log_id = kafka-{topic}-{partition}-{offset}
+  (event_id와 ingested_at을 얻을 수 없으므로 Kafka 위치로 생성, 재처리돼도 같은 값이라 한 건만 유지)
 
 payload는 받은 바이트 그대로 BYTEA로 저장 (깨진 JSON, NUL 바이트, 잘못된 UTF-8도 거부되지 않음)
 조회: SELECT log_id, reason, bytea_to_text_safe(payload) FROM storage_failures; (함수는 docker/postgres/init/001_init.sql)
@@ -24,11 +25,11 @@ pub struct FailedLog<'a> {
 }
 
 /*
-저장하지 못한 로그들을 Bulk insert로 저장 (OpenSearch 거절 로그, Consumer 처리 실패 메시지)
+저장하지 못한 로그들을 Bulk insert로 저장
 
 UNNEST: 컬럼별 배열의 같은 위치에 있는 값을 하나의 행으로 묶음
   log_ids    = ["a1", "a2"]
-  reasons    = ["r1", "r2"]      →   ("a1", "r1", ...)
+  reasons    = ["r1", "r2"]      ->   ("a1", "r1", ...)
   ...                                ("a2", "r2", ...)
 */
 pub async fn save_failures(pool: &PgPool, failures: &[FailedLog<'_>]) -> Result<(), sqlx::Error> {
@@ -37,7 +38,7 @@ pub async fn save_failures(pool: &PgPool, failures: &[FailedLog<'_>]) -> Result<
     }
 
     // 한 번 순회하면서 UNNEST에 사용할 컬럼별 배열을 각각 생성
-    // 예: failures 2건 → log_ids["a1", "a2"], reasons["r1", "r2"], ...
+    // 예: failures 2건 -> log_ids["a1", "a2"], reasons["r1", "r2"], ...
     let mut log_ids = Vec::with_capacity(failures.len());
     let mut reasons = Vec::with_capacity(failures.len());
     let mut payloads = Vec::with_capacity(failures.len());
@@ -255,11 +256,11 @@ mod tests {
     /*
     시나리오 4: 깨진 원문도 바이트 그대로 저장되고, bytea_to_text_safe()로 사람이 읽을 수 있게 조회된다
 
-    4444: 깨진 JSON          → 그대로 저장, 문자열로 조회
-    5555: NUL 바이트          → TEXT·JSON 컬럼이면 거부되는 값, escape 표기(\000)로 조회
-    6666: 잘못된 UTF-8(0xff) → escape 표기(\377)로 조회
-    7777: 빈 메시지           → 빈 바이트로 저장
-    8888: 한글                → 깨지지 않고 그대로 조회
+    4444: 깨진 JSON          -> 그대로 저장, 문자열로 조회
+    5555: NUL 바이트          -> TEXT·JSON 컬럼이면 거부되는 값, escape 표기(\000)로 조회
+    6666: 잘못된 UTF-8(0xff) -> escape 표기(\377)로 조회
+    7777: 빈 메시지           -> 빈 바이트로 저장
+    8888: 한글                -> 깨지지 않고 그대로 조회
     */
     #[tokio::test]
     #[ignore]

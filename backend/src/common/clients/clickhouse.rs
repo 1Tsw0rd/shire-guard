@@ -109,7 +109,7 @@ impl ClickHouseClient {
     ) -> Result<serde_json::Value, AppError> {
         // ClickHouse HTTP는 URL 파라미터 중 "param_"으로 시작하는 것만 SQL의 {이름:타입} 값으로 인식함
         // 호출부는 SQL에 쓴 이름 그대로 넘기고, 여기서 "param_"을 붙임
-        // 예: ("event_type", "file_download") → ("param_event_type", "file_download")
+        // 예: ("event_type", "file_download") -> ("param_event_type", "file_download")
         let params: Vec<(String, &str)> = params
             .iter()
             .map(|(name, value)| (format!("param_{}", name), *value))
@@ -200,7 +200,7 @@ mod tests {
     number < 3
 
     결과:
-    0, 1, 2 → 총 3개
+    0, 1, 2 -> 총 3개
     */
     #[tokio::test]
     #[ignore]

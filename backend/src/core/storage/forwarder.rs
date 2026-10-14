@@ -1,5 +1,5 @@
 /*
-전달 Task: 처리 Task들이 채널로 보낸 로그를 Batch로 만들어 OpenSearch → ClickHouse 순서로 저장
+전달 Task: 처리 Task들이 채널로 보낸 로그를 Batch로 만들어 OpenSearch -> ClickHouse 순서로 저장
 
 << 릴레이 배치 저장 방식 >>
 
@@ -33,11 +33,11 @@ ClickHouse
 Kafka commit
 
 1. OpenSearch Bulk 저장 (문서별 결과 확인)
-200/201 → 저장됨
-400     → 거절 (문서 자체 문제, 다시 보내도 같은 결과)
-429/5xx → 그 문서만 재시도
-그 외   → 설정·환경 문제로 보고 에러 로그 후 재시도
-요청 자체 실패 → 남은 문서 전체 재시도
+200/201 -> 저장됨
+400     -> 거절 (문서 자체 문제, 다시 보내도 같은 결과)
+429/5xx -> 그 문서만 재시도
+그 외   -> 설정·환경 문제로 보고 에러 로그 후 재시도
+요청 자체 실패 -> 남은 문서 전체 재시도
                             │
 2. ClickHouse INSERT (OpenSearch에 저장된 로그만, 실패하면 전체 재시도)
                                    │
@@ -142,7 +142,7 @@ impl StorageForwarder {
         tracing::warn!("[STORAGE FORWARDER CLOSED] 채널이 닫혀 전달 Task를 종료함");
     }
 
-    // Batch 1개 저장: OpenSearch → ClickHouse → (거절된 로그가 있으면) PostgreSQL -> Kafka commit 위치 갱신
+    // Batch 1개 저장: OpenSearch -> ClickHouse -> (거절된 로그가 있으면) PostgreSQL -> Kafka commit 위치 갱신
     async fn store_batch(&self, batch: Vec<StorageRecord>) {
         // OpenSearch
         let (stored, rejected) = self.index_opensearch(&batch).await;
@@ -188,9 +188,9 @@ impl StorageForwarder {
             let docs: Vec<BulkDoc> = pending
                 .iter()
                 .map(|&record| BulkDoc {
-                    index: &record.index_name,     // String → &String
-                    id: &record.log_id,            // String → &String
-                    source: record.doc.as_bytes(), // String → &[u8] (as_bytes()가 이미 참조 반환)
+                    index: &record.index_name,     // String -> &String
+                    id: &record.log_id,            // String -> &String
+                    source: record.doc.as_bytes(), // String -> &[u8] (as_bytes()가 이미 참조 반환)
                 })
                 .collect();
 
@@ -204,7 +204,7 @@ impl StorageForwarder {
                     let mut unexpected: Option<(u16, Option<String>)> = None;
 
                     // zip(): pending의 로그와 results의 응답을 같은 순서끼리 묶음
-                    // 예: [record, B, C] + [item, 400, 429] → [(record, item), (B, 400), (C, 429)]
+                    // 예: [record, B, C] + [item, 400, 429] -> [(record, item), (B, 400), (C, 429)]
                     for (record, item) in pending.into_iter().zip(results) {
                         // OpenSearch Response를 상태에 따라 분류
                         match classify(item.status) {

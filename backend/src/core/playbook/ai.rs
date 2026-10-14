@@ -4,7 +4,7 @@ ai.rs: AI 대응 노드의 실행 담당
 
 이 파일이 하는 일
 - 캐시 키 생성: sha256(model + prompt + Evidence, event_id/timestamp/ingested_at 제외)
-- Redis/Dragonfly 조회 → 있으면 그대로 반환
+- Redis/Dragonfly 조회 -> 있으면 그대로 반환
 - 없으면 Ollama(/api/chat)를 호출해서 risk/reason을 받아옴
 - 성공(success) 결과만 Redis/Dragonfly에 TTL 7일로 저장 (에러는 저장하지 않음: 일시 장애가 TTL 동안 고정되는 것을 막기 위함)
 - Redis/Dragonfly 장애 시에는 Ollama를 호출하지 않고 CacheUnavailable 에러 반환
@@ -20,13 +20,13 @@ ai.rs: AI 대응 노드의 실행 담당
   AI 요청 - 아래 전체 과정에 AI_CALL_TIMEOUT(60초) 적용
     ↓
   Redis/Dragonfly 캐시 조회
-    ├─ Hit  → 저장된 결과 반환
-    ├─ 장애 → CacheUnavailable 반환 (Ollama 호출 안 함)
+    ├─ Hit  -> 저장된 결과 반환
+    ├─ 장애 -> CacheUnavailable 반환 (Ollama 호출 안 함)
     └─ Miss
          ↓
        in_flight 확인
-         ├─ 같은 요청이 이미 진행 중 → waiter: leader의 결과를 기다렸다가 그대로 반환
-         └─ 진행 중인 요청이 없음    → leader
+         ├─ 같은 요청이 이미 진행 중 -> waiter: leader의 결과를 기다렸다가 그대로 반환
+         └─ 진행 중인 요청이 없음    -> leader
                                           ↓
                                        캐시 재확인 (직전 leader가 방금 저장했을 수 있음)
                                           ↓
@@ -34,19 +34,19 @@ ai.rs: AI 대응 노드의 실행 담당
                                           ↓
                                        Ollama 호출
                                           ↓
-                                       Success → 캐시 저장 / Error → 저장 안 함
+                                       Success -> 캐시 저장 / Error -> 저장 안 함
                                           ↓
                                        in_flight에서 leader가 자기 키 제거 후, 결과를 waiter들과 공유
 
 [예시] 같은 요청 3개가 동시에 도착
-  A: 캐시 Miss → 가장 먼저 도착 → leader → Ollama 호출(10초) → 결과를 캐시에 저장
-  B: 캐시 Miss → 같은 요청이 진행 중 → waiter → A의 결과를 받아 반환
-  C: 캐시 Miss → 같은 요청이 진행 중 → waiter → A의 결과를 받아 반환
-  10초 뒤 도착한 D: 캐시 Hit → 바로 반환
+  A: 캐시 Miss -> 가장 먼저 도착 -> leader -> Ollama 호출(10초) -> 결과를 캐시에 저장
+  B: 캐시 Miss -> 같은 요청이 진행 중 -> waiter -> A의 결과를 받아 반환
+  C: 캐시 Miss -> 같은 요청이 진행 중 -> waiter -> A의 결과를 받아 반환
+  10초 뒤 도착한 D: 캐시 Hit -> 바로 반환
 
 [시간 제한] AI_CALL_TIMEOUT(60초) 하나만 사용
 - 캐시 조회, 순번 대기, Ollama 호출, waiter 대기가 모두 이 시간 안에 포함됨
-- 초과하면 Timeout 에러 반환 → engine.rs에서 해당 플레이북의 결정을 HOLD로 처리
+- 초과하면 Timeout 에러 반환 -> engine.rs에서 해당 플레이북의 결정을 HOLD로 처리
 - Redis/Dragonfly가 에러를 반환하면 Ollama를 호출하지 않고 CacheUnavailable 에러 반환
   (장애 시 에러가 반환되기까지 10초 이상 걸릴 수 있고, 이 시간도 AI_CALL_TIMEOUT 60초에 포함됨)
 - leader가 timeout으로 취소되면 남은 waiter 중 하나가 새 leader가 되어 다시 시도
@@ -210,7 +210,7 @@ impl AiClient {
     pub async fn call(&self, model: AiModel, prompt: &str, evidence: &Evidence) -> AiResult {
         // AI 요청 하나가 끝나기까지의 전체 상한 (캐시 조회 + 순번 대기 + Ollama 호출 + waiter 대기)
         // 초과하면 Timeout 에러를 반환하고, engine에서 해당 플레이북의 결정을 HOLD로 처리함
-        // 산정 근거: 콜드 스타트 실측 qwen 22초, Foundation-Sec 16초 + 순번 대기 시간 → 60초
+        // 산정 근거: 콜드 스타트 실측 qwen 22초, Foundation-Sec 16초 + 순번 대기 시간 -> 60초
         const AI_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
         match timeout(AI_CALL_TIMEOUT, self.call_inner(model, prompt, evidence)).await {
@@ -222,7 +222,7 @@ impl AiClient {
         }
     }
 
-    // 캐시 확인 → (같은 키가 진행 중이면 그 결과 대기) → leader가 Ollama 호출
+    // 캐시 확인 -> (같은 키가 진행 중이면 그 결과 대기) -> leader가 Ollama 호출
     async fn call_inner(&self, model: AiModel, prompt: &str, evidence: &Evidence) -> AiResult {
         let key = match cache_key(model, prompt, evidence) {
             Ok(k) => k,
@@ -239,7 +239,7 @@ impl AiClient {
         }
 
         // 2. 같은 키로 진행 중인 요청이 있으면 그 cell을 공유하고, 없으면 새로 생성
-        // std Mutex는 lock → 맵 조작 → 해제까지만 쓰고 그 안에서 await 하지 않음
+        // std Mutex는 lock -> 맵 조작 -> 해제까지만 쓰고 그 안에서 await 하지 않음
         let cell = {
             let mut map = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(
@@ -259,7 +259,7 @@ impl AiClient {
     }
 
     // Redis/Dragonfly 캐시 조회
-    // Hit → Some(저장된 결과) / 장애 → Some(CacheUnavailable 에러) / Miss(값 없음, 파싱 실패 포함) → None
+    // Hit -> Some(저장된 결과) / 장애 -> Some(CacheUnavailable 에러) / Miss(값 없음, 파싱 실패 포함) -> None
     async fn lookup_cache(&self, key: &str, model: AiModel) -> Option<AiResult> {
         match self.redis.get(key).await {
             Ok(Some(json)) => match serde_json::from_str::<AiResult>(&json) {
@@ -277,7 +277,7 @@ impl AiClient {
         }
     }
 
-    // leader의 실제 처리: 캐시 재확인 → Ollama 순번 대기 → Ollama 호출 → 성공만 캐시 저장
+    // leader의 실제 처리: 캐시 재확인 -> Ollama 순번 대기 -> Ollama 호출 -> 성공만 캐시 저장
     // 함수가 끝나면 guard가 drop되면서 in_flight에서 자기 키가 제거됨 (캐시 저장이 끝난 뒤)
     async fn run_leader(
         &self,
@@ -456,8 +456,8 @@ fn cache_key(
     hasher.update(model.as_str().as_bytes()); // 모델 이름을 해시 계산에 입력
     hasher.update(b"\0");
     // 구분자: 조각을 그냥 이어붙이면 서로 다른 (model,prompt) 조합이 같은 바이트 스트림이 될 수 있는 경계 문제를 방지
-    // 예: model="AB", prompt="CD" → "ABCD"
-    //     model="A",  prompt="BCD" → "ABCD"  (서로 다른 입력인데 결과가 같아짐)
+    // 예: model="AB", prompt="CD" -> "ABCD"
+    //     model="A",  prompt="BCD" -> "ABCD"  (서로 다른 입력인데 결과가 같아짐)
     // \0은 model/prompt/JSON 문자열 어디에도 나타나지 않는 값이라 경계 표시로 사용
     hasher.update(prompt.as_bytes()); // 이어서 prompt를 해시 계산에 입력
     hasher.update(b"\0");
@@ -466,7 +466,7 @@ fn cache_key(
     let digest = hasher.finalize(); // 지금까지 입력한 모든 데이터를 바탕으로 SHA-256 최종 결과를 반환 (32 바이트)
 
     // SHA-256 결과는 32바이트의 바이너리 값이므로 사람이 읽기 좋은 16진수 문자열로 변환
-    // 예: [0x9f, 0x86, 0xd0, ...] → "9f86d0..."
+    // 예: [0x9f, 0x86, 0xd0, ...] -> "9f86d0..."
     let hex: String = digest.iter().map(|byte| format!("{:02x}", byte)).collect();
     // 최종 캐시 키 예: "ai:9f86d081..."
     Ok(format!("ai:{hex}"))

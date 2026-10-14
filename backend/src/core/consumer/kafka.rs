@@ -18,8 +18,8 @@
 // JSON payload 추출
 //      ↓
 // RawEvent 역직렬화
-//      ├── 성공 → Enrichment → Playbook → 저장 Task(forwarder.rs)로 전달
-//      └── 실패 → 원문과 사유를 PostgreSQL storage_failures에 보관
+//      ├── 성공 -> Enrichment -> Playbook -> 저장 Task(forwarder.rs)로 전달
+//      └── 실패 -> 원문과 사유를 PostgreSQL storage_failures에 보관
 //
 // Kafka offset commit:
 // 메시지를 받으면 offset 추적기(offset.rs)에 등록하고, OpenSearch·ClickHouse 저장이 끝난 offset까지만 commit 위치로 저장
@@ -141,7 +141,7 @@ impl ClientContext for KafkaConsumerContext {
 //
 // ConsumerContext에는 rebalance, commit callback 등 Consumer 동작과 관련된 여러 callback이 정의되어 있다.
 // 그중 pre_rebalance만 구현: partition 할당이 해제(Revoke)되기 직전에 호출되어 offset 추적기의 해당 partition 기록을 삭제
-// (기록은 담당하는 동안에만 유효하므로, 다시 할당되면 새로 기록해야 함 → offset.rs revoke() 주석 참고)
+// (기록은 담당하는 동안에만 유효하므로, 다시 할당되면 새로 기록해야 함 -> offset.rs revoke() 주석 참고)
 //
 // 이 callback은 수신 루프의 recv() 안에서 실행되며, 추적기 lock을 OffsetCommitter::finish()와 함께 사용함
 // finish()가 lock을 잡는 시간은 Batch 2만 건의 이진 탐색(1ms 미만)과 store_offsets(librdkafka 메모리에 기록)뿐이라 대기가 짧음
@@ -503,7 +503,7 @@ async fn process_event(
     );
     tracing::trace!(?evidence, "[EVIDENCE] {:?}", evidence);
 
-    // Playbook 평가 (결정한 Playbook이 없으면 None → 원본 로그 그대로 저장)
+    // Playbook 평가 (결정한 Playbook이 없으면 None -> 원본 로그 그대로 저장)
     let playbook_result = engine.run(&evidence).await;
     match &playbook_result {
         Some(result) => tracing::debug!(
@@ -538,7 +538,7 @@ async fn process_event(
     };
 
     // 전달 Task로 넘김: 채널이 가득 차면 여기서 대기 -> 처리 Task의 permit이 반납되지 않아 Kafka 소비도 멈춤 (backpressure)
-    // 넘기지 못하면 완료 처리하지 않음 → commit되지 않으므로 재시작 후 다시 처리됨
+    // 넘기지 못하면 완료 처리하지 않음 -> commit되지 않으므로 재시작 후 다시 처리됨
     if storage_tx.send(record).await.is_err() {
         tracing::error!(
             event_id = %evidence.event.event_id,

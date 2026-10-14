@@ -80,11 +80,11 @@ INSERT INTO playbooks (name, description, enabled, nodes) VALUES
 --   }
 --
 -- 저장된 로그의 playbook_result.action 기대 결과
---   "test_votes": "D1,D2,H1"     → DENY   (DENY 2/3)
---   "test_votes": "H1,H2,D1"     → HOLD   (HOLD 2/3)
---   "test_votes": "T1,T2,D1"     → DETECT (DETECT 2/3)
---   "test_votes": "D1,H1,T1"     → HOLD   (과반 없음 → HOLD)
---   "test_votes": "D1,D2,T1,T2"  → HOLD   (2:2 동률, 과반 아님 → HOLD)
+--   "test_votes": "D1,D2,H1"     -> DENY   (DENY 2/3)
+--   "test_votes": "H1,H2,D1"     -> HOLD   (HOLD 2/3)
+--   "test_votes": "T1,T2,D1"     -> DETECT (DETECT 2/3)
+--   "test_votes": "D1,H1,T1"     -> HOLD   (과반 없음 -> HOLD)
+--   "test_votes": "D1,D2,T1,T2"  -> HOLD   (2:2 동률, 과반 아님 -> HOLD)
 INSERT INTO playbooks (name, description, enabled, nodes) VALUES
 ('[TEST] D1', '다수결 테스트: test_votes에 D1 포함 시 DENY', TRUE,
  $json$[{ "type": "condition", "name": "D1", "when": { "field": "test_votes", "op": "contains", "value": "D1" } },

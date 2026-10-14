@@ -17,8 +17,8 @@ OpenSearch/ClickHouse에 저장할 이벤트 로그 한 건을 만드는 파일
 }
          ↓
 StorageRecord
-  log_id     : sha256(event_id|ingested_at)   → OpenSearch _id, ClickHouse log_id 컬럼
-  index_name : event-logs-2026.10.03          → OpenSearch 인덱스 (ingested_at의 UTC 날짜)
+  log_id     : sha256(event_id|ingested_at)   -> OpenSearch _id, ClickHouse log_id 컬럼
+  index_name : event-logs-2026.10.03          -> OpenSearch 인덱스 (ingested_at의 UTC 날짜)
   doc        : 위 JSON (줄바꿈 없음)
   partition  : Kafka/RedPanda 커밋 위치 계산용
   offset     : Kafka/RedPanda 커밋 위치 계산용

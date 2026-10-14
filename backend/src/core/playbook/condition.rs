@@ -327,15 +327,15 @@ pub fn render_when(expr: &Expr) -> String {
             // ]
             //
             // 1. iter(): Vec<Expr>의 각 조건을 하나씩 순회
-            //    → condition1, condition2
+            //    -> condition1, condition2
             //
             // 2. map(render_when): 각 조건을 사람이 읽는 문자열로 변환
-            //    → render_when() 내부의 render_value()가 값의 타입에 따라 문자열을 만듦
-            //    → JSON 문자열은 Value::String => s.clone() 처리로 따옴표(" ")를 제거
-            //      "file_download" → file_download
-            //    → JSON 숫자는 Value::Number => n.to_string() 처리로 숫자 그대로 사용
-            //      100000 → 100000
-            //    → "(event_type eq file_download)"
+            //    -> render_when() 내부의 render_value()가 값의 타입에 따라 문자열을 만듦
+            //    -> JSON 문자열은 Value::String => s.clone() 처리로 따옴표(" ")를 제거
+            //      "file_download" -> file_download
+            //    -> JSON 숫자는 Value::Number => n.to_string() 처리로 숫자 그대로 사용
+            //      100000 -> 100000
+            //    -> "(event_type eq file_download)"
             //      "(file_size_bytes gt 100000)"
             //
             // 3. collect::<Vec<_>>(): 변환된 문자열들을 Vec<String>으로 모음
@@ -346,7 +346,7 @@ pub fn render_when(expr: &Expr) -> String {
             //    ]
             //
             // 4. join(" and "): 문자열 사이에 " and "를 넣어 하나로 합침
-            //    → "(event_type eq file_download) and (file_size_bytes gt 100000)"
+            //    -> "(event_type eq file_download) and (file_size_bytes gt 100000)"
             and.iter()
                 .map(render_when)
                 .collect::<Vec<_>>()
@@ -376,7 +376,7 @@ fn render_value(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(), // "file_download" -> file_download
         Value::Number(n) => n.to_string(),
-        other => other.to_string(), // 방어코드: Bool/Array/Object/Null → JSON 표기 (예: true, [1,2], {"a":1})
+        other => other.to_string(), // 방어코드: Bool/Array/Object/Null -> JSON 표기 (예: true, [1,2], {"a":1})
     }
 }
 
@@ -645,7 +645,7 @@ mod tests {
     fn eq_ne_type_mismatch_is_always_false() {
         let event = json!({ "score": 10 });
 
-        // 숫자 필드 vs 문자열 value: 타입이 달라 비교 불가 → eq도 ne도 false
+        // 숫자 필드 vs 문자열 value: 타입이 달라 비교 불가 -> eq도 ne도 false
         assert!(!eval(&cond("score", Op::Eq, Some(json!("10"))), &event)); // false
         assert!(!eval(&cond("score", Op::Ne, Some(json!("10"))), &event)); // false
     }

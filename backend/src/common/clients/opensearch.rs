@@ -47,7 +47,7 @@ impl OpenSearchClient {
         Ok(Self { http, base_url })
     }
 
-    // 모든 요청의 공통 처리: 전송 → 상태 코드 확인 → 응답 JSON을 T로 해석
+    // 모든 요청의 공통 처리: 전송 -> 상태 코드 확인 -> 응답 JSON을 T로 해석
     // action: 에러 메시지에 쓸 요청 이름 (예: "Search", "Bulk")
     async fn send<T: DeserializeOwned>(
         &self,

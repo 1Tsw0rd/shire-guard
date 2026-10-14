@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS playbooks (
 );
 
 -- 이벤트 처리 과정에서 OpenSearch·ClickHouse에 저장하지 못한 로그 보관
--- 1. OpenSearch가 document 자체 문제(400)로 거절한 로그      → log_id: OpenSearch _id·ClickHouse log_id와 같은 값
--- 2. Consumer가 처리할 수 없는 메시지(빈 메시지, 역직렬화 실패 등) → log_id: kafka-{topic}-{partition}-{offset}
+-- 1. OpenSearch가 document 자체 문제(400)로 거절한 로그      -> log_id: OpenSearch _id·ClickHouse log_id와 같은 값
+-- 2. Consumer가 처리할 수 없는 메시지(빈 메시지, 역직렬화 실패 등) -> log_id: kafka-{topic}-{partition}-{offset}
 -- 재처리로 같은 로그가 다시 실패해도 log_id PK로 한 건만 유지 (INSERT ... ON CONFLICT (log_id) DO NOTHING)
 CREATE TABLE IF NOT EXISTS storage_failures (
     log_id          TEXT PRIMARY KEY,                -- 1번: sha256(event_id|ingested_at), 2번: kafka-{topic}-{partition}-{offset}

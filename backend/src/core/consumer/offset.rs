@@ -6,9 +6,9 @@ Kafka/RedPanda offset 추적기: OpenSearch·ClickHouse 저장이 끝난 로그�
 (마치 TCP의 윈도우 슬라이딩과 유사)
 
 예시: partition 0에서 offset 5, 6, 7 수신
-  7 완료 → [5 처리 중, 6 처리 중, 7 완료]  commit 위치 5 유지
-  5 완료 → [6 처리 중, 7 완료]            commit 위치 6
-  6 완료 → []                            commit 위치 8 (마지막 수신 offset + 1)
+  7 완료 -> [5 처리 중, 6 처리 중, 7 완료]  commit 위치 5 유지
+  5 완료 -> [6 처리 중, 7 완료]            commit 위치 6
+  6 완료 -> []                            commit 위치 8 (마지막 수신 offset + 1)
 
 - commit 위치는 "다음에 읽을 offset"이며, Consumer가 재시작하면 이 위치부터 다시 읽음
 - 이 추적기가 계산한 위치만 Kafka offset으로 저장해야 함 (Consumer 설정 enable.auto.offset.store=false)
@@ -26,16 +26,16 @@ partition 하나의 수신 기록
 예시: partition 0에서 offset 5, 6, 7 수신
 
                  pending                    next_offset  commit 위치  completed_below
-  5, 6, 7 수신 → [5 처리 중, 6 처리 중, 7 처리 중]     8          -            0   (finish 전이라 아직 계산 안 함)
-  7 완료       → [5 처리 중, 6 처리 중, 7 완료]        8          5            5   (맨 앞 5가 미완료 → 5 유지)
-  5 완료       → [6 처리 중, 7 완료]                  8          6            6   (5 제거, 맨 앞이 6)
-  6 완료       → []                                 8          8            8   (6, 7 제거, 비었으니 next_offset)
+  5, 6, 7 수신 -> [5 처리 중, 6 처리 중, 7 처리 중]     8          -            0   (finish 전이라 아직 계산 안 함)
+  7 완료       -> [5 처리 중, 6 처리 중, 7 완료]        8          5            5   (맨 앞 5가 미완료 -> 5 유지)
+  5 완료       -> [6 처리 중, 7 완료]                  8          6            6   (5 제거, 맨 앞이 6)
+  6 완료       -> []                                 8          8            8   (6, 7 제거, 비었으니 next_offset)
 */
 #[derive(Default)]
 struct PartitionWindow {
     pending: VecDeque<(i64, bool)>, // offset 관리용 자료구조
     next_offset: i64, // 다음 commit 할 offset 후보: 지금까지 수신한 가장 큰 offset + 1
-    completed_below: i64, // 마지막으로 계산한 commit 위치: 이 값보다 작은 offset은 모두 저장 완료됨
+    completed_below: i64, // 마지막으로 계산한 commit 위치: 이 값보다 작은 offset은 모두 저장 완료됨을 의미
 }
 
 impl PartitionWindow {
@@ -58,7 +58,34 @@ impl OffsetTracker {
         // OffsetTracker::new()  ==  OffsetTracker { partitions: HashMap::new() } <- 이것은 빈 HashMap
     }
 
-    // 메시지 수신 시 등록, Consumer가 메시지를 받은 순서대로 호출해야 함 (처리 Task 실행 순서가 아님)
+    /*
+    메시지 수신 시 offset을 처리 중으로 등록함, Consumer가 메시지를 받은 순서대로 호출해야 함 (처리 Task 실행 순서가 아님)
+
+    동작 예시: 현재 상태가 아래와 같을 때 offset이 들어오는 경우
+      completed_below = 5   (5보다 작은 offset은 모두 저장 완료)
+      pending         = [(5,false), (7,false)]
+      next_offset     = 8
+
+    1. begin(8): 일반적인 경우 (가장 큰 offset보다 큼)
+       8 < 5 아님 -> 통과
+       next_offset = max(8, 8+1) = 9
+       맨 뒤 7보다 크므로, 맨 뒤에 새로 추가
+       pending = [(5,false), (7,false), (8,false)]
+
+    2. begin(3): 이미 저장이 끝난 offset 재전송
+       3 < completed_below(5) 이므로 무시 (아무것도 바뀌지 않음)
+
+    3. begin(7): 처리 중인 offset 재전송
+       7 < 5 아님 -> 통과, next_offset = max(9, 8) = 9 (그대로)
+       맨 뒤 8보다 크지 않음 -> 이진 탐색 -> Ok(1) (이미 있음) -> 추가하지 않음 (만약 없었다면 해당 인덱스 위치에 추가됨, 아래 4. begin(6)에서 설명)
+       pending = [(5,false), (7,false), (8,false)] (그대로, 기존 미완료 기록 유지)
+
+    4. begin(6): 중간에 빠져 있던 offset이 늦게 들어옴
+       6 < 5 아님 -> 통과, next_offset = 9 (그대로)
+       맨 뒤 8보다 크지 않음 -> 이진 탐색 -> Err(1) (없음, 넣을 자리는 인덱스 1)
+       인덱스 1에 삽입 -> pending = [(5,false), (6,false), (7,false), (8,false)]
+       (6이 저장되기 전에는 commit 위치가 6을 넘지 않음)
+    */
     pub fn begin(&mut self, partition: i32, offset: i64) {
         let window = self.partitions.entry(partition).or_default(); // entry()로 key가 있으면 그 값을, 없으면 빈 window를 새로 넣고 그 값을 꺼냄
 
@@ -88,10 +115,10 @@ impl OffsetTracker {
     저장이 완료된 로그를 반영하고, 각 partition에서 안전하게 commit할 수 있는 다음 offset을 반환함
     예: partition 0의 offset 5, 6이 모두 완료되고 앞선 로그도 완료됐다면 [(0, 7)] 반환
 
-    OpenSearch·ClickHouse·(거절 로그가 있으면) PostgreSQL 저장이 모두 끝난 뒤에만 호출해야 함
+    OpenSearch와 ClickHouse, (거절 로그가 있으면) PostgreSQL 저장이 모두 끝난 뒤에만 호출해야 함
 
-    done: 저장이 완료된 로그들의 목록. 각 항목은 (partition, 저장 완료한 offset)
-    IntoIterator: for로 하나씩 꺼낼 수 있는 것이면 배열·Vec·iterator 등 무엇이든 받는 trait
+    done: 저장이 완료된 로그들의 목록, 각 항목은 (partition, 저장 완료한 offset)
+    IntoIterator: for로 하나씩 꺼낼 수 있는 것이면 배열/Vec/iterator 등 무엇이든 받는 trait
     (i32, i64)는 (partition, offset)을 의미
     IntoIterator 사용 이유: 호출하는 곳마다 데이터 형태가 달라서 (kafka.rs는 1건짜리 배열, forwarder.rs는 Batch에서 뽑은 iterator) 별도 Vec 복사 없이 그대로 받기 위함
     */
@@ -152,8 +179,8 @@ impl OffsetTracker {
 
         1. partition 0
         while 반복:
-        front() → (5,true) -> 완료됨 -> pop_front() → [(6,false), (7,true)]
-        front() → (6,false) -> 미완료 -> while 종료
+        front() -> (5,true) -> 완료됨 -> pop_front() -> [(6,false), (7,true)]
+        front() -> (6,false) -> 미완료 -> while 종료
 
         commit_position() -> 맨 앞 6 반환
         completed_below = 6
@@ -161,8 +188,8 @@ impl OffsetTracker {
 
         2. partition 1
         while 반복:
-        front() → (100,true) -> 완료됨 -> pop_front() -> []
-        front() → None (비었음) -> while 종료
+        front() -> (100,true) -> 완료됨 -> pop_front() -> []
+        front() -> None (비었음) -> while 종료
 
         commit_position() -> 비었으니 next_offset 101
         completed_below = 101
