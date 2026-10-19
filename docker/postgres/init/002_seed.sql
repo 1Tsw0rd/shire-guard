@@ -31,7 +31,7 @@ INSERT INTO playbooks (name, description, enabled, nodes) VALUES
 ),
 (
   '애매한 파일 AI 분석',
-  'VirusTotal 악성 탐지가 1~9개인 파일 다운로드를 AI로 분석하고, 위험도에 따라 HOLD/DENY/DETECT 처리',
+  'VirusTotal 악성 탐지가 1~9개인 파일 다운로드를 AI로 분석하고, 위험도에 따라 DENY/HOLD/DETECT 처리',
   FALSE,  -- Ollama 실행 후 활성화
   $json$[
     { "type": "condition", "name": "파일 다운로드 + 애매한 구간",
@@ -42,7 +42,7 @@ INSERT INTO playbooks (name, description, enabled, nodes) VALUES
     { "type": "ai_response",
       "model": "qwen2.5:14b-instruct",
       "prompt": "보안 이벤트와 enrichment 결과를 분석하고 위험도를 판단하라.",
-      "actions": { "HIGH": "HOLD", "MEDIUM": "DENY", "LOW": "DETECT" } }
+      "actions": { "HIGH": "DENY", "MEDIUM": "HOLD", "LOW": "DETECT" } }
   ]$json$::jsonb
 ),
 (
