@@ -80,7 +80,6 @@ impl PlaybookEngine {
 
         // AI 노드 호출 시 Ollama에 보낼 원본 Evidence가 필요해서 별도로 한 번만 clone해 Arc로 공유
         // (event_value는 condition 평가용으로 직렬화된 Value, evidence는 AI 호출용 원본)
-
         let evidence = Arc::new(evidence.clone());
 
         let mut set = JoinSet::new();
@@ -158,13 +157,11 @@ fn majority_vote(decisions: &[PlaybookDecision]) -> Action {
 enum WalkOutcome<'a> {
     NoMatch,    // 조건 노드 중 하나라도 거짓인 경우
     NoTerminal, // 대응 노드(response | ai_response)를 만나지 못한 경우
-
     Response {
         // 일반 대응 노드(response)의 결과
         action: Action,
         when: Option<String>,
     },
-
     AiResponse {
         // AI 대응 노드(ai_response)의 결과
         model: AiModel,
@@ -248,7 +245,6 @@ async fn evaluate_playbook(
 
     match walk_playbook(&playbook.nodes, &event_value) {
         WalkOutcome::NoMatch | WalkOutcome::NoTerminal => None,
-
         WalkOutcome::Response { action, when } => Some(PlaybookDecision {
             playbook_id,
             name,
@@ -256,7 +252,6 @@ async fn evaluate_playbook(
             when,
             ai_result: None,
         }),
-
         WalkOutcome::AiResponse {
             model,
             prompt,
