@@ -6,11 +6,6 @@
 // 나머지 필드들은 그대로 보존한다.
 //
 // 추가로, Enrichment가 실제로 조사하는 3개 IOC(src_ip/dst_domain/file_sha256)만 명시적 필드로 둔다.(enrichment_iocs() 참고)
-//
-// 현재 테스트용 표준 이벤트 예시:
-// - file_download: src_ip, dst_domain, file_name, file_sha256, file_size_bytes
-// - login_failure: src_ip, username, attempt_count, target_service
-// - dns_beacon:    src_ip, dst_domain, hostname, request_interval_seconds
 
 use serde::{Deserialize, Serialize};
 

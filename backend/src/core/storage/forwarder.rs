@@ -51,7 +51,7 @@ Kafka commit
 - 같은 로그를 다시 저장해도 중복되지 않음: OpenSearch는 같은 _id로 덮어씀, ClickHouse는 ReplacingMergeTree가 병합 시 하나만 남김,
   PostgreSQL은 ON CONFLICT DO NOTHING
 
-- 이 기능은 OpenSearch와 ClickHouse 로그를 동일하게 하며, 유실율 0%를 목표로 한다.
+- 이 기능은 OpenSearch와 ClickHouse 로그를 동일하게 하며, 유실률 0%를 목표로 한다.
 */
 
 use std::sync::Arc;
@@ -82,7 +82,7 @@ use crate::core::storage::retry::RetryDelay;
 pub const CHANNEL_CAPACITY: usize = 40_000; // 채널에 쌓일 수 있는 최대 로그 수 (Batch 2개분)
 
 const BATCH_SIZE: usize = 20_000; // Batch 1개의 최대 로그 수
-const BATCH_MAX_WAIT: Duration = Duration::from_millis(200); // Batch을 완성하기까지 최대 대기 시간
+const BATCH_MAX_WAIT: Duration = Duration::from_millis(200); // Batch를 완성하기까지 최대 대기 시간
 const MAX_IN_FLIGHT: usize = 8; // 동시에 저장 중일 수 있는 Batch 수
 
 pub struct StorageForwarder {
