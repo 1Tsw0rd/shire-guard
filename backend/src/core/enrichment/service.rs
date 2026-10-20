@@ -161,7 +161,7 @@ impl EnrichmentService {
         }
     }
 
-    // Consumer가 개별 IOC enrichment를 직접 요청할 때 사용하는 공개 진입점
+    // 개별 IOC enrichment를 직접 요청할 때 사용하는 공개 진입점
     pub async fn enrich_src_ip(&self, ioc: &str) -> EnrichmentResult<AbuseIpDbData> {
         self.enrich(&self.abuseipdb, &self.abuseipdb_breaker, ioc)
             .await

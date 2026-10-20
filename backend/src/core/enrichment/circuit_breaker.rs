@@ -71,7 +71,7 @@ pub struct CircuitBreaker {
     consecutive_failures: AtomicU32, // 현재 연속 실패 횟수 카운트
     opened_at_nanos: AtomicU64, // 차단기가 켜진(Open) 시점의 타임스탬프로 Instant::now()를 기준점 대비 나노초(예: 1.000075217s)로 환산해 저장
     epoch: Instant,             // 서킷브레이커가 생성 시점의 시간 기준점
-    failure_threshold: u32,     // Open 기준이 되는 연속 실패 횟수(3회 세팅 예정)
+    failure_threshold: u32,     // Open 기준이 되는 연속 실패 횟수
     cooldown: Duration,         // Open 유지 시간 (지나면 Half-Open으로 전환 시도)
 }
 

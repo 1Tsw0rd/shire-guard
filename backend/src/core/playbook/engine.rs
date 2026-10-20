@@ -61,9 +61,9 @@ impl PlaybookEngine {
 
     // 이벤트 하나를 활성 Playbook 전체에 대해 평가하고
     // 다수결로 최종 결과를 수합
-    // 결정한 Plabbook이 하나도 없으면 None이며, 원본 로그 그대로 통과하고 playbook_result 필드는 미생성됨
+    // 결정한 Playbook이 하나도 없으면 None이며, 원본 로그 그대로 통과하고 playbook_result 필드는 미생성됨
     pub async fn run(&self, evidence: &Evidence) -> Option<PlaybookResult> {
-        // 활성 Palybook 목록 가져오기
+        // 활성 Playbook 목록 가져오기
         let playbooks = self.store.snapshot().await;
         if playbooks.is_empty() {
             return None;
