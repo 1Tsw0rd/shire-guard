@@ -1,160 +1,4 @@
-## 임시 아키텍처
-                  RAW EVENT
-                      │
-                      ▼
-                 Vector
-               (Normalize)
-                      │
-                      ▼
-                    Kafka/RedPanda
-                      │
-                      ▼
-              ┌─────────────────┐
-              │ Rust Enrichment │
-              └───────┬─────────┘
-          ┌───────────┼───────────┐
-          ▼           ▼           ▼
-     AbuseIPDB       DNS      VirusTotal
-     (IP 평판)      (도메인/    (해시/URL/
-                    A레코드)    IP 평판)
-          │           │           │
-          └───────────┼───────────┘
-                      ▼
-              Enriched Evidence
-           (검증된 사실 — Source of Truth)
-           ※ IP/해시 판정 결과는 Redis/Dragonfly에 캐싱
-                      │
-                      ▼
-                Playbook Engine
-        (설정 조회는 Moka 인메모리 캐시 활용 — 로드맵)
-                      │
-                      ▼
-                Condition Node
-              (명백한 케이스 판별)
-                      │
-              ┌───────┴───────┐
-              ▼               ▼
-         명백한 케이스        애매한 케이스
-              │               │
-              ▼               ▼
-       Block / Pass    ┌─────────────────┐
-       (룰 기반 즉시)   │  AI Analysis Node │
-              │        ├─────────────────┤
-              │        │ Model: [선택]     │
-              │        │  Qwen2.5-14B      │
-              │        │  Foundation-Sec-8B│
-              │        │                   │
-              │        │ Prompts: [+ 추가]  │
-              │        └─────────┬─────────┘
-              │                  ▼
-              │           risk == HIGH ?
-              │                  │
-              │          ┌───────┴───────┐
-              │          ▼               ▼
-              │        Block            Pass
-              │          │               │
-              └──────────┴───────┬───────┘
-                                 ▼
-                         Playbook Log 저장
-                    (action, action_source,
-                     ai_reason, risk, timestamp)
-                                 │
-                         ┌───────┴───────┐
-                         ▼               ▼
-                   OpenSearch       ClickHouse
-                  (조회/검색용)      (집계/통계용)
-
-## 모니터링 아키텍처
-
-     ┌────────────────┐       ┌──────────────────────────────┐
-     │    cAdvisor    │       │       Monitored Services     │
-     │                │       │                              │
-     │ 모든 컨테이너의  │       │ Vector                       │
-     │ 리소스 수집      │       │ Kafka / RedPanda            │
-     │                │       │ Redis / Dragonfly            │
-     │ CPU / Memory   │       │ PostgreSQL                   │
-     │ Network        │       │ OpenSearch                   │
-     │ UP / DOWN      │       │ ClickHouse                   │
-     └───────┬────────┘       │ Rust Axum                    │
-             │                │ Ollama                       │
-             │                │                              │
-             │                │ Pipeline Metrics             │
-             │                └──────────────┬───────────────┘
-             │                               │
-             └───────────────┬───────────────┘
-                             │
-                   Prometheus scrape (Metrics)
-                             │
-                             ▼
-                    ┌──────────────────────┐
-                    │      Prometheus      │
-                    │    메트릭 수집 · 저장  │
-                    └──────────┬───────────┘
-                               │
-                         PromQL 조회
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │       Grafana        │
-                    │   시각화 · 알림 · 로그  │
-                    │   조회 · Alert History│
-                    └─────────┬────────────┘
-                              │
-                       LogQL / State History
-                              │
-                              ▼
-                    ┌──────────────────────┐
-                    │         Loki         │
-                    │    로그 · Alert State │
-                    │       History 저장    │
-                    └──────────────────────┘
-
-## 보고서 생성 - hwpx
-* 단건 이벤트 보고서
-* 집계(주간) 이벤트 보고서
-
-## 임시 Playbook Log (모든 경로가 여기로 합류)
-```json
-{
-  "event_id": "evt-143348",
-  "action": "BLOCK_IP",
-  "action_source": "condition",     // "condition" 또는 "ai_analysis"
-  "ai_reason": null,                // condition이면 null, ai_analysis면 report.summary
-  "risk": "HIGH",
-  "timestamp": "..."
-}
-```
-action_source로 룰 기반 차단인지 AI 판단 차단인지 구분
-ai_reason은 AI Analysis Node를 거친 경우에만 채워짐 (룰 기반이면 null)
-
-## 임시 AI Analysis Node 스펙
-```json
-{
-  "node_type": "ai_analysis",
-  "model": "qwen2.5-14b",          // 또는 "foundation-sec-8b" — 선택 가능
-  "custom_prompts": [               // + 버튼으로 자유 추가
-    "IP가 특정 국가에서 접속한 경우 지리적 리스크를 추가 평가하세요."
-  ],
-  "output_schema": {
-    "risk": "HIGH|MEDIUM|LOW",
-    "summary": "string",
-    "analysis": "string",
-    "recommendations": ["string"]
-  }
-}
-```
-모델은 Qwen 단독 또는 Foundation-Sec 단독 중 하나만 선택 (2단계 검증은 제외)
-custom_prompts는 기본 시스템 프롬프트에 이어붙여서 사용
-출력은 항상 동일한 report 스키마로 강제
-
-### AI Analysis Node 실행 시 입력 구성
-
-노드 스펙(모델, 프롬프트 설정)은 정적이며, 실제 실행 시점에 
-Enriched Evidence(해당 이벤트의 동적 데이터)와 결합되어 AI에게 전달된다.
-
-  최종 프롬프트 = base_system_prompt + custom_prompts + Enriched Evidence
-
----
+# Docker 서비스별 사용법
 
 ## ⚙️ 환경 변수 (.env)
 
@@ -166,22 +10,26 @@ cp docker/.env.example docker/.env
 # 값 채우기
 ```
 
-## 🐳 AI 모델 (Ollama)
+---
+---
+---
 
-### 0. GPU 패스스루 확인
+## 🐳 1. AI 모델 (Ollama)
+
+### GPU 패스스루 확인
 > 참고용, 문제 발생 시 점검용 (Docker가 GPU 접근 가능한지 확인)
 
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 ```
 
-### 1. Ollama 컨테이너 실행
+### 1-1. Ollama 컨테이너 실행
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d ollama
 ```
 
-### 2. 모델 pull
+### 1-2. 모델 pull
 
 Qwen2.5-14B, Foundation-Sec-8B 두 모델을 설치한다.
 
@@ -190,15 +38,15 @@ docker exec -it ollama ollama pull qwen2.5:14b-instruct
 docker exec -it ollama ollama pull hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF
 ```
 
-### 3. 설치된 모델 목록 확인
+### 1-3. 설치된 모델 목록 확인
 
 ```bash
 docker exec -it ollama ollama list
 ```
 
-### 4. 통신 방법
+### 1-4. 통신 방법
 
-실제 서비스 코드에서 사용할 방식 — REST API 호출
+실제 서비스 코드(`backend/src/core/playbook/ai.rs`)에서 사용하는 방식 — REST API 호출
 
 ```bash
 curl http://localhost:11434/api/chat -d '{
@@ -233,7 +81,11 @@ curl http://localhost:11434/api/chat -d '{
 | `user` | 사용자 질문 |
 | `assistant` | 모델의 이전 답변 (대화 이력을 이어갈 때 사용) |
 
-## 📡 Vector (이벤트 정규화)
+---
+---
+---
+
+## 📡 2. Vector (이벤트 정규화)
 
 원본 로그/이벤트를 받아(source) 정규화한 뒤(transform) 원하는 곳으로 전달(sink)하는 파이프라인 도구.
 Logstash의 input-filter-output과 동일한 개념.
@@ -244,47 +96,53 @@ Logstash의 input-filter-output과 동일한 개념.
 | Transform | 필드 변환/정규화 (VRL) |
 | Sink | 이벤트 전달 (console, Kafka, Elasticsearch 등). 내보낼 때 **encoding**으로 부호화 |
 
-### 1. 컨테이너 실행
+### 2-1. 컨테이너 실행
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.vector.yml up -d vector
 ```
 
-### 2. 설정 파일 검증 (선택)
+### 2-2. 설정 파일 검증 (선택)
 ```bash
-docker exec -it vector vector validate --config /etc/vector/vector.toml
+docker exec -it vector vector validate //etc/vector/vector.toml
 ```
 
-### 3. 테스트 이벤트 전송
+### 2-3. 테스트 이벤트 전송
+
+**[참고 사항]**
+- `vector.toml`에서 활성화한 sink의 브로커(Kafka 또는 RedPanda) 컨테이너가 실행 중이어야 함
+- 브로커가 꺼져 있으면 Vector가 저장 확인을 기다리느라 **응답 없이 멈춤** (`docker logs vector`에 `Failed to resolve 'redpanda:9092'` 등 연결 에러 출력)
+- JSON은 반드시 **한 줄**로 전송 (여러 줄로 보내면 400 에러)
+
+
 ```bash
-curl -X POST http://localhost:8081 \
+curl -i -X POST http://localhost:8081 \
   -H "Content-Type: application/json" \
-  -d '{
-  "event_id": "evt-20260908-001",
-  "timestamp": "2026-09-08T10:15:00Z",
-  "source_ip": "185.220.101.45",
-  "destination_domain": "cdn-update-service.net",
-  "file_name": "invoice_2026.exe",
-  "file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "file_size_bytes": 245760
-}'
+  -d '{"event_id":"evt-20260908-001","timestamp":"2026-09-08T10:15:00Z","source_ip":"185.220.101.45","destination_domain":"cdn-update-service.net","file_name":"invoice_2026.exe","file_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","file_size_bytes":245760}'
 ```
 
-### 4. 결과 확인
+### 2-4. 결과 확인
+- 정상 전송 시 HTTP 200 응답
+- `vector.toml`의 `console_out` sink를 활성화하면 `docker logs -f vector`로도 확인 가능
+
 ```bash
 docker logs -f vector
 ```
 
-### 5. Health 상태 확인
+### 2-5. Health 상태 확인
 브라우저 또는 curl로 확인: http://localhost:8686/health
 `{"ok":true}` 응답이면 정상.
 
 ### 참고 명령어
 ```bash
 docker exec -it vector vector --version                              # 버전 확인
-docker exec -it vector vector graph --config /etc/vector/vector.toml # 파이프라인 구조 확인
+docker exec -it vector vector graph --config //etc/vector/vector.toml # 파이프라인 구조 확인
 ```
 
-## 📨 Kafka (KRaft, Zookeeper 미사용)
+---
+---
+---
+
+## 📨 3. Kafka (KRaft, Zookeeper 미사용)
 
 분산 이벤트 스트리밍 플랫폼. Producer가 보낸 메시지를 토픽 단위로 저장하고,
 Consumer가 순서대로 읽어가는 큐 역할. 시스템 간 비동기 연결점.
@@ -295,21 +153,22 @@ Vector가 Producer, Rust Enrichment가 Consumer 역할을 담당. 별도 Produce
 |---|---|---|
 | CLIENT | Vector 등 클라이언트 접속용 (9092) | PLAINTEXT |
 | CONTROLLER | 브로커 간 메타데이터 통신 (9093) | PLAINTEXT |
+| EXTERNAL | 호스트(Rust 등)에서 직접 접속 (19092) | PLAINTEXT |
 
 - 단일 브로커 → 복제 계수(replication factor) 1 고정 (3 이상은 브로커 3개 이상 필요)
 - 로컬 개발 환경 → SSL/SASL 암호화 미적용 (운영 배포 시 적용 필요)
-- 토픽 자동 생성 비활성화 → 수동 생성 필요
+- 토픽 자동 생성 활성화 → Vector가 첫 이벤트를 보낼 때 토픽이 자동 생성됨
 - 컨테이너 간 통신은 Docker 내장 DNS로 서비스명(`kafka`) 사용, `localhost` 아님
 
-### 1. 전체 서비스 실행
+### 3-1. 전체 서비스 실행
 ```bash
 cd docker
 docker compose -f docker-compose.yml  -f docker-compose.kafka.yml up -d kafka
 ```
 
-### 2. 토픽 생성 (최초 1회)
+### 3-2. 토픽 생성 (필요 시)
 ```bash
-docker exec -it kafka //opt/kafka/bin/kafka-topics.sh \
+docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-topics.sh \
   --create \
   --topic test_topic \
   --bootstrap-server localhost:9092 \
@@ -317,51 +176,43 @@ docker exec -it kafka //opt/kafka/bin/kafka-topics.sh \
   --replication-factor 1
 ```
 
-### 3. 토픽 확인
+### 3-3. 토픽 확인
 ```bash
-docker exec -it kafka //opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
+docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
 ```
 
-### 4. 컨슈머 대기 (별도 터미널)
+### 3-4. 컨슈머 대기 (별도 터미널)
 ```bash
-docker exec -it kafka //opt/kafka/bin/kafka-console-consumer.sh \
+docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 \
   --topic test_topic \
   --from-beginning
 ```
 
-### 5. Vector로 이벤트 전송 → Kafka 전달 확인
+### 3-5. Vector로 이벤트 전송 → Kafka 전달 확인
 ```bash
-curl -X POST http://localhost:8081 \
+curl -i -X POST http://localhost:8081 \
   -H "Content-Type: application/json" \
-  -d '{
-  "event_id": "evt-20260908-001",
-  "timestamp": "2026-09-08T10:15:00Z",
-  "source_ip": "185.220.101.45",
-  "destination_domain": "cdn-update-service.net",
-  "file_name": "invoice_2026.exe",
-  "file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "file_size_bytes": 245760
-}'
+  -d '{"event_id":"evt-20260908-001","timestamp":"2026-09-08T10:15:00Z","source_ip":"185.220.101.45","destination_domain":"cdn-update-service.net","file_name":"invoice_2026.exe","file_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","file_size_bytes":245760}'
 ```
 컨슈머 화면에 변환된 JSON이 뜨면 Vector → Kafka 파이프라인 정상.
 
-### 6. 참고: 소비 상태 확인
+### 3-6. 참고: 소비 상태 확인
 
 ```bash
 # 토픽 오프셋(쌓인 메시지 수) 확인
-docker exec -it kafka //opt/kafka/bin/kafka-get-offsets.sh \
+docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-get-offsets.sh \
   --bootstrap-server localhost:9092 \
   --topic test_topic
 
 # 컨슈머 그룹 소비 상태(Lag) 확인 — --group으로 실행한 컨슈머만 추적 가능
-docker exec -it kafka //opt/kafka/bin/kafka-consumer-groups.sh \
+docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-consumer-groups.sh \
   --bootstrap-server localhost:9092 \
   --describe \
   --group test-group
 ```
 
-### 7. JMX Exporter (Prometheus 메트릭 노출)
+### 3-7. JMX Exporter (Prometheus 메트릭 노출)
 
 - https://prometheus.github.io/jmx_exporter/
 
@@ -403,8 +254,11 @@ healthcheck:
 # JMX Exporter가 9404 포트를 중복으로 사용하여 unhealthy가 되는 것을 방지할 수 있다.
 ```
 
+---
+---
+---
 
-## 📨 RedPanda (Kafka 프로토콜 호환 브로커)
+## 📨 4. RedPanda (Kafka 프로토콜 호환 브로커)
 
 Kafka API와 호환되는 C++ 기반 이벤트 스트리밍 브로커.
 - Kafka 프로토콜 호환
@@ -414,59 +268,51 @@ Kafka API와 호환되는 C++ 기반 이벤트 스트리밍 브로커.
 | 리스너 종류 | 역할 | 포트 |
 |---|---|---|
 | internal | Docker 네트워크 안(Vector 등)에서 접속 | 9092 (고정) |
-| external | 호스트 머신에서 직접 접속 | `${REDPANDA_PORT}`(19092, 가변) |
+| external | 호스트 머신에서 직접 접속 | `${REDPANDA_PORT}`(29092, 가변) |
 
 - 단일 브로커, `--mode dev-container`로 개발용 사전 설정 적용
 - Kafka와 달리 환경변수가 아닌 `redpanda start` 커맨드라인 인자로 직접 설정 (`--kafka-addr`, `--advertise-kafka-addr` 등)
 - 토픽 생성은 `rpk`(RedPanda 전용 CLI)로 수행
 - 컨테이너 간 통신은 Docker 내장 DNS로 서비스명(`redpanda`) + internal 포트(9092) 사용
 
-### 1. 컨테이너 실행
+### 4-1. 컨테이너 실행
 ```bash
 cd docker
 docker compose -f docker-compose.yml -f docker-compose.redpanda.yml up -d redpanda
 ```
 
-### 2. 클러스터 상태 확인
+### 4-2. 클러스터 상태 확인
 ```bash
 docker exec -it redpanda rpk cluster health
 docker exec -it redpanda rpk cluster info
 ```
 
-### 3. 토픽 생성 (최초 1회)
+### 4-3. 토픽 생성 (필요 시)
 ```bash
 docker exec -it redpanda rpk topic create test_topic
 ```
 > 참고: docker-compose.redpanda.yml > command > `--mode dev-container`는 토픽 자동 생성이 기본 활성화돼 있어, 수동 생성 없이 Vector가 첫 이벤트를 보내는 순간 자동으로 만들어지기도 함. 위 명령은 명시적으로 미리 만들어두고 싶을 때 사용.
 
-### 4. 토픽 자동 생성 비활성화
+### 4-4. 토픽 자동 생성 비활성화
 ```bash
 docker exec -it redpanda rpk cluster config set auto_create_topics_enabled false
 ```
 
-### 5. 토픽 확인
+### 4-5. 토픽 확인
 ```bash
 docker exec -it redpanda rpk topic list
 ```
 
-### 6. 컨슈머 대기 (별도 터미널)
+### 4-6. 컨슈머 대기 (별도 터미널)
 ```bash
 docker exec -it redpanda rpk topic consume test_topic
 ```
 
-### 7. Vector로 이벤트 전송 → RedPanda 전달 확인
+### 4-7. Vector로 이벤트 전송 → RedPanda 전달 확인
 ```bash
-curl -X POST http://localhost:8081 \
+curl -i -X POST http://localhost:8081 \
   -H "Content-Type: application/json" \
-  -d '{
-  "event_id": "evt-20260908-001",
-  "timestamp": "2026-09-08T10:15:00Z",
-  "source_ip": "185.220.101.45",
-  "destination_domain": "cdn-update-service.net",
-  "file_name": "invoice_2026.exe",
-  "file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "file_size_bytes": 245760
-}'
+  -d '{"event_id":"evt-20260908-001","timestamp":"2026-09-08T10:15:00Z","source_ip":"185.220.101.45","destination_domain":"cdn-update-service.net","file_name":"invoice_2026.exe","file_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","file_size_bytes":245760}'
 ```
 컨슈머 화면에 변환된 JSON이 뜨면 Vector → RedPanda 파이프라인 정상.
 
@@ -479,7 +325,11 @@ docker exec -it redpanda rpk topic describe test_topic
 docker exec -it redpanda rpk group describe test-group
 ```
 
-## 🔎 OpenSearch (조회/검색 저장소)
+---
+---
+---
+
+## 🔎 5. OpenSearch (조회/검색 저장소)
 
 오픈소스 분산 검색·분석 엔진으로, 로그와 이벤트 데이터를 색인하고 검색하는 데 사용.
 
@@ -487,32 +337,35 @@ docker exec -it redpanda rpk group describe test-group
 - JSON 문서 기반 검색
 - OpenSearch Dashboards 제공
 
-Vector가 정규화한 이벤트를 저장. Kibana 대신 OpenSearch Dashboards 사용.
+Rust Backend가 처리한 이벤트(원본 + Enrichment + 플레이북 판정 결과)를 저장. Kibana 대신 OpenSearch Dashboards 사용.
 
-### 실행
+### 5-1. 실행
 ```bash
 docker compose -f docker-compose.yml  -f docker-compose.opensearch.yml up -d opensearch opensearch-dashboards
 ```
 
-### 확인 (OpenSearch Dashboards)
+### 5-2. 확인 (OpenSearch Dashboards)
 1. http://localhost:5601 접속
 2. Dev Tools 메뉴에서 쿼리 실행:
 ```
-GET shire-events/_search
+GET event-logs-*/_search
 {
   "query": { "match_all": {} }
 }
 ```
 
+---
+---
+---
 
-## 📊 ClickHouse (집계/통계 저장소)
+## 📊 6. ClickHouse (집계/통계 저장소)
 
 컬럼 기반 OLAP DB. 대량 데이터의 집계/통계 쿼리에 최적화, 
 단건 수정/삭제는 비효율적이라 Append-only 로그성 데이터에 적합.
 
-동일 이벤트를 정형 필드로 저장, 향후 대시보드/집계 쿼리용.
+OpenSearch와 동일한 로그를 저장 (`log_id` + `payload` JSON), 집계 · 보고서 생성용.
 
-### 컨테이너 실행
+### 6-1. 컨테이너 실행
 ```bash
 docker compose -f docker-compose.yml  -f docker-compose.clickhouse.yml up -d clickhouse
 ```
@@ -520,58 +373,65 @@ docker compose -f docker-compose.yml  -f docker-compose.clickhouse.yml up -d cli
 ### 테이블 자동 생성
 docker/clickhouse/init/ 폴더의 SQL이 최초 실행 시 자동 적용됨.
 
-### 확인 (Play UI)
+### 6-2. 확인 (Play UI)
 1. http://localhost:8123/play 접속
 2. 로그인: CLICKHOUSE_USER / CLICKHOUSE_PASSWORD (docker/.env 참고)
 3. 쿼리 실행:
 ```sql
-SELECT * FROM shire.security_events
+SELECT * FROM shire.event_logs LIMIT 10
 ```
 
-## 🐘 PostgreSQL (Playbook 설정 저장소)
+---
+---
+---
+
+## 🐘 7. PostgreSQL (플레이북 설정 · 실패 로그 저장소)
 
 오픈소스 객체 관계형 데이터베이스로, 구조화된 데이터를 안정적으로 저장하고 관리할 수 있음
 
-Playbook 정의(조건 노드, AI 분석 노드 설정)를 저장
+`playbooks`(플레이북 설정)와 `storage_failures`(저장 실패 로그 원문) 테이블을 저장
 
-### 1. 컨테이너 실행
+### 7-1. 컨테이너 실행
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d postgres
 ```
 
-### 2. 접속 확인
+### 7-2. 접속 확인
 ```bash
-docker exec -it postgres psql -U ${POSTGRES_USER} -d ${POSTGRES_DB}
+docker exec -it postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
+- 접속 종료: `\q`
 
-### 3. 연결 문자열
+### 7-3. 연결 문자열
 `backend/.env`의 `DATABASE_URL`에서 관리 (docker/.env와 별개, Rust 앱이 직접 읽는 값).
 
+---
+---
+---
 
-## 🧰 Redis / Dragonfly (캐싱)
+## 🧰 8. Redis / Dragonfly (캐싱)
 
 인메모리 Key-Value 저장소. Dragonfly는 Redis 프로토콜과 호환되는 대체 구현체.
 빠른 조회가 필요한 데이터에 사용. 기본은 휘발성이지만 AOF 등으로 영속화도 가능
 
-AbuseIPDB/VirusTotal 등 외부 API 조회 결과(IP 평판, 파일 해시 판정)를 캐싱해 
-동일 IOC의 중복 조회를 방지하고 API rate limit을 절약. 재시작 후에도 데이터가 
-유지되도록 영속 볼륨(AOF) 사용
+AbuseIPDB · DNS · VirusTotal 조회 결과와 AI 대응 노드 결과를 캐싱해 동일 IOC의 중복 조회를 방지하고 API rate limit을 절약.
+현재 tmpfs(메모리 저장소)로 설정되어 컨테이너 재시작 시 캐시가 초기화됨
 
-### 1. 컨테이너 실행
+### 8-1. 컨테이너 실행
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.redis.yml up -d redis
 # 또는
 docker compose -f docker-compose.yml -f docker-compose.dragonfly.yml up -d dragonfly
 ```
 
-### 2. CLI 접속
+### 8-2. CLI 접속
 ```bash
-docker exec -it redis redis-cli -a ${REDIS_PASSWORD}
+docker exec -it redis redis-cli -a "$(grep '^REDIS_PASSWORD=' .env | cut -d= -f2-)"
 # Dragonfly도 redis-cli 프로토콜 호환이라 동일하게 접속 가능
-docker exec -it dragonfly redis-cli -a ${DRAGONFLY_PASSWORD}
+docker exec -it dragonfly redis-cli -a "$(grep '^DRAGONFLY_PASSWORD=' .env | cut -d= -f2-)"
 ```
 
-### 3. 기본 명령어
+### 8-3. 기본 명령어
 ```bash
 KEYS *                   # 현재 DB에 있는 key 목록 확인
 SET key value EX 60      # key에 value 저장, 60초 후 만료
@@ -615,17 +475,21 @@ SET key value NX EX 10   # key가 없을 때만 저장하고 10초 후 자동 �
    → enrichment:lock:abuseipdb:1.2.3.4
 ```
 
-## 📈 Grafana (모니터링 대시보드)
+---
+---
+---
+
+## 📈 9. Grafana (모니터링 대시보드)
 
 서비스 상태와 리소스 사용량을 한눈에 확인할 수 있는 모니터링 대시보드 도구
 
-### 컨테이너 실행
+### 9-1. 컨테이너 실행
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.grafana.yml up -d grafana
 ```
 
-### Web UI 접속
+### 9-2. Web UI 접속
 
 ```text
 http://localhost:3000
@@ -633,8 +497,11 @@ http://localhost:3000
 
 기본 로그인: `admin / admin`
 
+---
+---
+---
 
-## 📈 Prometheus (메트릭 수집기)
+## 📈 10. Prometheus (메트릭 수집기)
 
 오픈소스 모니터링 시스템으로, 각 서비스에서 제공하는 메트릭(metric)​을 주기적으로 가져와 시계열 데이터로 저장
 (Grafana 혼자서는 데이터를 수집하지 못하고, Prometheus 같은 데이터 소스가 있어야 시각화할 대상이 생김)
@@ -652,18 +519,18 @@ Vector/Kafka/RedPanda/Rust 등 파이프라인 각 단계가 "몇 개를 처리�
 Prometheus가 계속 가져가 쌓아두면, Grafana에서 "Vector는 100개를 보냈는데 
 Rust는 0개를 받았다"처럼 구간별 수치를 비교해 이상 징후를 발견할 수 있음
 
-### 1. 컨테이너 실행
+### 10-1. 컨테이너 실행
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prometheus.yml up -d prometheus
 ```
 
-### 2. 웹 UI 접속
+### 10-2. 웹 UI 접속
 ```
 http://localhost:9090
 ```
-상단 메뉴의 Status → Targets에서, 등록된 각 서비스가 정상적으로 수집되고 있는지(`UP`) 확인 가능.
+상단 메뉴의 Status → Target health에서, 등록된 각 서비스가 정상적으로 수집되고 있는지(`UP`) 확인 가능.
 
-### 3. 스크래핑 대상 설정
+### 10-3. 스크래핑 대상 설정
 `docker/prometheus/prometheus.yml`에서 관리. 어떤 서비스의 어떤 주소에서 
 메트릭을 가져올지 여기에 등록해야 Prometheus가 수집을 시작함
 
@@ -681,39 +548,44 @@ http://localhost:9090
 | cAdvisor | `cadvisor:8080/metrics` |
 | Rust Backend | `host.docker.internal:3001/metrics` |
 
-### 4. 기본 쿼리 확인
-웹 UI의 Graph 탭에서 쿼리 입력 후 실행 가능:
+### 10-4. 기본 쿼리 확인
+웹 UI의 Query 탭에서 쿼리 입력 후 실행 가능:
 ```
 up
 ```
 등록된 모든 대상의 생존 여부(1=정상, 0=응답 없음) 한눈에 확인
 
-### 5. Redis / Dragonfly 캐시 메트릭
+### 10-5. Redis / Dragonfly 캐시 메트릭
 Redis와 Dragonfly는 Prometheus 메트릭을 제공하는 방식이 다르다.
 
 Redis: 별도의 redis_exporter를 사용해 Redis의 상태와 key 수 등의 메트릭을 Prometheus가 수집하도록 구성
+
 Dragonfly: 자체 /metrics endpoint를 제공하므로 별도의 exporter 없이 Prometheus가 직접 수집 가능
 
 Shire Guard에서는 캐시 key 개수를 exporter에 의존하지 않고, 애플리케이션에서 DBSIZE 명령어를 사용해 직접 확인하는 방식으로 구현함
 
-## 📊 cAdvisor (컨테이너 리소스 모니터링)
+---
+---
+---
+
+## 📊 11. cAdvisor (컨테이너 리소스 모니터링)
 
 Google이 만든 오픈소스 도구로, 실행 중인 모든 Docker 컨테이너의 
 CPU/메모리/디스크/네트워크 사용량을 자동으로 수집해 Prometheus 포맷으로 노출함
 
-컨테이너 하나만 띄우면 Kafka, Vector, Rust 등 다른 모든 서비스의 리소스
+컨테이너 하나만 띄우면 Kafka, Vector, OpenSearch 등 다른 모든 컨테이너의 리소스
 상태를 별도 설정 없이 한 번에 모니터링 대상으로 만들 수 있음
 (서비스별로 각각 exporter를 붙일 필요 없음)
 
 호스트 시스템(파일시스템, cgroup 등)에 깊이 접근해야 하는 특성상
 `privileged: true`와 다수의 읽기 전용 마운트가 필요함
 
-### 1. 컨테이너 실행
+### 11-1. 컨테이너 실행
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.cadvisor.yml up -d cadvisor
 ```
 
-### 2. 웹 UI 접속
+### 11-2. 웹 UI 접속
 ```
 # Web UI
 http://localhost:8082
@@ -722,41 +594,58 @@ http://localhost:8082
 http://localhost:8082/metrics
 ```
 
-### 3. Prometheus 연동 (다음 단계)
-`docker/prometheus/prometheus.yml`에 스크래핑 대상으로 등록하면,
-cAdvisor가 수집한 데이터를 Prometheus가 가져가 장기 보관하고
-Grafana에서 시계열 그래프로 확인 가능해짐
+### 11-3. Prometheus 연동
+`docker/prometheus/prometheus.yml`에 스크래핑 대상(`cadvisor:8080`)으로 등록되어 있어,
+cAdvisor가 수집한 데이터를 Prometheus가 가져가 보관하고
+Grafana에서 시계열 그래프로 확인 가능
 
+---
+---
+---
 
-## 🦀 Rust Backend (Axum)
+## 🦀 12. Rust Backend (Axum)
 
 Kafka/RedPanda Consumer와 HTTP API 서버 역할을 함께 수행하는 Rust 기반 Backend.
 
 컨테이너가 아니라 호스트에서 `cargo run`으로 직접 실행하며, Docker 서비스 목록에는 포함되지 않는다.
 
-### 1. 실행
+### 12-1. 실행
 
 ```bash
 cd backend
 cargo run --release
 ```
 
-### 2. 확인
+### 12-2. 확인
 
 ```bash
 curl http://localhost:3001/health    # ok 응답
 curl http://localhost:3001/metrics   # Prometheus 형식 metric 노출
 ```
 
-### 3. Prometheus 메트릭 노출
+### 12-3. Prometheus 메트릭 노출
 
-`common/metrics.rs`에서 Rust 애플리케이션의 Consumer 및 Broker 상태 metric을 관리하고, `/metrics` 엔드포인트를 통해 Prometheus 형식으로 노출한다.
+`common/metrics.rs`에서 Rust 애플리케이션의 Consumer, Broker, 캐시, 저장 상태 metric을 관리하고, `/metrics` 엔드포인트를 통해 Prometheus 형식으로 노출한다.
 
+**Consumer · Broker**
 * `shireguard_consumer_messages_received_total` — Consumer가 브로커에서 수신한 메시지 수
 * `shireguard_consumer_events_parsed_total` — RawEvent 파싱 성공 수
 * `shireguard_consumer_events_failed_total` — RawEvent 파싱 실패 수 (빈 메시지 포함)
+* `shireguard_consumer_broker_connected` — Consumer와 Broker 연결 상태 (`0`=끊김, `1`=연결됨)
+* `shireguard_consumer_committed_offset` — 브로커에 commit된 offset (partition별)
+* `shireguard_consumer_lag` — 브로커 최신 offset - commit된 offset (partition별)
 * `shireguard_config_active_broker{broker="kafka|redpanda"}` — 현재 `MESSAGE_BROKER` 설정
-* `shireguard_consumer_broker_connected` — Consumer가 Broker 연결 상태를 주기적으로 관측하여 연결 상태를 `0` 또는 `1`로 표시
+
+**캐시**
+* `shireguard_cache_key_count` — 캐시(Redis/Dragonfly)에 저장된 전체 키 개수 (`DBSIZE`, Enrichment · AI 결과 · 락 키 포함)
+* `shireguard_config_active_cache` — 현재 `CACHE_BACKEND` 설정
+
+**저장**
+* `shireguard_storage_events_sent_total` — OpenSearch와 ClickHouse에 모두 저장 완료된 로그 수
+* `shireguard_storage_db_events_total` — DB별 저장 완료된 로그 수 (`db`: opensearch, clickhouse)
+* `shireguard_storage_retries_total` — DB 저장 실패로 재시도한 횟수 (`db`: opensearch, clickhouse, postgres)
+* `shireguard_storage_request_seconds` — DB 저장 요청 1번의 응답 시간(초)
+* `shireguard_storage_rejected_total` — OpenSearch가 거절(400)해 `storage_failures`에 기록한 로그 수 (정상이면 0)
 
 불변식:
 
@@ -788,9 +677,9 @@ Prometheus metric도 다음과 같이 `1 → 0 → 1`로 변화하는 것을 확
 1 → Broker 재연결
 ```
 
-⚠️ Kafka/RedPanda 재시작 시 주의
-- stop/start: 데이터 유지, 안전
-- down/up: 데이터+토픽 전부 삭제 → 토픽 재생성 필요 + Rust 재시작 필수 (안 하면 재구독 실패)
+⚠️ Kafka/RedPanda 재시작 시 참고
+- stop/start, down/up: 데이터 유지 (`kafka/data`, `redpanda/data` 폴더에 저장)
+- data 폴더 삭제 시: 토픽이 사라지지만 Vector가 첫 이벤트를 보낼 때 자동 생성됨
 
 ### 참고사항
 
@@ -800,10 +689,13 @@ Prometheus metric도 다음과 같이 `1 → 0 → 1`로 변화하는 것을 확
 
 (`common/middleware.rs`)
 
-필요 시 `.env`의 `RUST_LOG`를 임시로 조정하여 상세 로그를 확인한다.
+필요 시 `backend/.env`의 `RUST_LOG`를 임시로 조정하여 상세 로그를 확인한다.
 
+---
+---
+---
 
-## 📝 Loki (로그 집계 및 Alert State History 저장소)
+## 📝 13. Loki (로그 집계 및 Alert State History 저장소)
 
 Grafana에서 사용하는 오픈소스 로그 집계 시스템으로,
 로그를 수집·저장하고 LogQL을 통해 검색할 수 있음.
@@ -816,13 +708,13 @@ Loki는 다음과 같은 **로그 사건 내용**을 저장하는 용도로 사�
 - 오류 메시지
 - Grafana Alert 상태 변경 기록
 
-### 1. 컨테이너 실행
+### 13-1. 컨테이너 실행
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.loki.yml up -d loki
 ```
 
-### 2. Loki 확인
+### 13-2. Loki 확인
 ```text
 # Ready 상태 확인
 http://localhost:3100/ready
@@ -831,13 +723,13 @@ http://localhost:3100/ready
 http://localhost:3100/metrics
 ```
 
-### 3. Grafana 연동 및 Alert State History
+### 13-3. Grafana 연동 및 Alert State History
 Grafana에서 Loki를 Data Source로 사용할 수 있으며,
 Explore에서 LogQL을 이용해 로그를 조회할 수 있음.
 
-`기본 로그 조회:`
+`알림 상태 이력 조회:`
 ```logql
-{container="grafana"}
+{from="state-history"} | json
 ```
 
 또한 Grafana Alert 상태 변경 기록을 Loki에 저장하도록 설정하면
@@ -851,7 +743,7 @@ Grafana Alerting → History에서 Alert 발생 및 복구 이력을 확인할 �
       - GF_UNIFIED_ALERTING_STATE_HISTORY_LOKI_REMOTE_URL=http://loki:3100   # Grafana가 Alert State History를 저장할 Loki 주소
 ```
 
-### 4. Grafana와 Loki의 역할 차이
+### 13-4. Grafana와 Loki의 역할 차이
 ```
 Prometheus
 → 숫자 형태의 metric 저장
@@ -865,3 +757,7 @@ Grafana
 → Prometheus metric + Loki log를 시각화
 → Dashboard / Explore / Alert History 제공
 ```
+
+---
+---
+---
