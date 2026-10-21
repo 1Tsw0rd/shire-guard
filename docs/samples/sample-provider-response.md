@@ -10,7 +10,7 @@ curl -G https://api.abuseipdb.com/api/v2/check \
 
 // Case 2 — 144.48.243.18
 
-// Case 2 — 255.255.255.999
+// Case 3 — 255.255.255.999
 ```
 
 ```json
