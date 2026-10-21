@@ -261,6 +261,9 @@ enrichment:lock:abuseipdb:144.48.243.18
 → 9f1c2e4a-7b3d-4e8f-a1c5-2d6b8e0f3a71
 ```
 
+**[Provider별 원본 응답 · 조회 예시]**
+- [sample-provider-response.md](docs/samples/sample-provider-response.md)
+
 #### 조회 흐름
 
 ```mermaid
@@ -777,26 +780,8 @@ flowchart TD
 ```
 
 **Ollama 응답 원본 예시**
-- AI 응답은 JSON 스키마로 `risk`(HIGH / MEDIUM / LOW 중 하나) · `reason` 형식을 강제함 (아래 content 부분 참고)
-
-```json
-{
-  "model": "qwen2.5:14b-instruct",
-  "created_at": "2026-09-26T12:39:09.55915638Z",
-  "message": {
-    "role": "assistant",
-    "content": "{\"risk\":\"HIGH\",\"reason\":\"The file name 'invoice.exe' is suspicious because it ends with '.exe', which is an executable file type. Executable files can potentially run harmful programs on your computer if they are downloaded from untrusted sources. The name 'invoice' is generic and does not provide any specific information about the file's origin or purpose, making it easy to disguise malicious intent.\"}"
-  },
-  "done": true,
-  "done_reason": "stop",
-  "total_duration": 38329905745,
-  "load_duration": 22066337603,
-  "prompt_eval_count": 50,
-  "prompt_eval_duration": 13758529000,
-  "eval_count": 82,
-  "eval_duration": 2500710000
-}
-```
+- AI 응답은 JSON 스키마로 `risk`(HIGH / MEDIUM / LOW 중 하나) · `reason` 형식을 강제함 (아래 원본 응답 예시의 `message.content` 부분 참고)
+- 원본 응답 예시: [sample-ai-response.json](docs/samples/sample-ai-response.json)
 
 #### 5) 플레이북 다수결
 
@@ -814,7 +799,10 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    V["판정을 낸<br/>Playbook 표 집계"] --> D{"DENY 비율 > 0.5"}
+    P1["Playbook 1 판정"] --> V["판정을 낸<br/>Playbook 표 집계"]
+    P2["Playbook 2 판정"] --> V
+    PN["Playbook N 판정"] --> V
+    V --> D{"DENY 비율 > 0.5"}
     D -->|"예"| DENY["DENY"]
     D -->|"아니오"| T{"DETECT 비율 > 0.5"}
     T -->|"예"| DETECT["DETECT"]
