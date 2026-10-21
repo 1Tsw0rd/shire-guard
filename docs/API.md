@@ -134,7 +134,7 @@ Content-Type: application/json
 }
 ```
 
-- **[참고 사항]** API 테스트할 때는 Vector는 요청 본문을 줄 단위로 읽으므로, JSON은 줄바꿈 없이 **한 줄로** 작성해야 함 (위 예시처럼 여러 줄로 보내면 `400` 오류 반환)
+- **[참고사항]** API 테스트할 때는 Vector는 요청 본문을 줄 단위로 읽으므로, JSON은 줄바꿈 없이 **한 줄로** 작성해야 함 (위 예시처럼 여러 줄로 보내면 `400` 오류 반환)
 ```json
 {"event_id":"evt-bruno-04","event_type":"login_failure","timestamp":"2026-10-21T00:00:00Z","source_ip":"185.220.101.45","username":"admin","attempt_count":12,"target_service":"ssh"}
 ```
