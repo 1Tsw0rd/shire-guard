@@ -1,9 +1,10 @@
+
 # Shire Guard
 
 ```text
 ┌─────────────────────────────────────────────────────┐
 │                     SHIRE  GUARD                    │
-│   AI-assisted Security Event Detection Pipeline     │
+│  AI-assisted Playbook Pipeline for Security Events  │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -14,15 +15,41 @@
 
 > **Project goal**
 >
-> 대량의 보안 이벤트를 사람이 아닌 Playbook과 AI로 자동 판정하고, 판정 결과를 유실 없이 저장해 로그 조회 또는 보고서로 활용
+> - 대량의 보안 이벤트를 사람이 아닌 Playbook과 AI로 자동 판정하고, 판정 결과를 유실 없이 저장해 로그 조회 또는 보고서로 활용
 
 > **Project context**
 >
 > - 개발 기간: 약 2개월
+>
 > - 개발 방식: AI 페어 프로그래밍(설계 대안 비교/코드 리뷰에 AI를 활용하고, 모든 코드는 직접 검토 및 테스트 후 반영)
+>
 > - 사용 AI 도구: Claude Pro(Main), ChatGPT Free(Sub), Grok, Google AI 검색
+>
 > - 프로젝트 성격: Rust/Axum 학습 후 보안 이벤트 처리 서버를 직접 설계·구현한 취업용 개인 프로젝트(2번째 프로젝트)
+>
+> - 기반 프로젝트: Rust Backend는 [Rust Axum Layered REST API](https://github.com/1Tsw0rd/rust-axum-layered-rest-api)에서 정리한 계층형 구조와 공통 처리 방식을 기반으로 일부 기능을 계승·확장하고, Shire Guard의 보안 이벤트 처리 및 Playbook 실행 파이프라인에 맞게 적용함
+>
 > - 현재 수준: 구간별 초당 약 10만 건, 전체 약 6.6만~7.1만/s (단일 노트북, Docker 전체 동시 실행)
+
+---
+
+## 목차
+
+- [Tech Stack](#tech-stack)
+- [Directory Structure](#directory-structure)
+- [Architecture](#architecture)
+- [Monitoring](#monitoring)
+- [주요 기능](#주요-기능)
+  - [1. 이벤트 수집 · 정규화](#1-이벤트-수집--정규화)
+  - [2. 병렬 처리 · Backpressure](#2-병렬-처리--backpressure)
+  - [3. Enrichment (위협 정보 조회)](#3-enrichment-위협-정보-조회)
+  - [4. Playbook 자동 판정](#4-playbook-자동-판정)
+  - [5. 로그 저장 (릴레이 배치 저장)](#5-로그-저장-릴레이-배치-저장)
+  - [6. Grafana 대시보드](#6-grafana-대시보드)
+  - [7. (구현 예정) 이벤트 · 플레이북 로그 조회](#7-구현-예정-이벤트--플레이북-로그-조회)
+  - [8. (구현 예정) 보고서 생성](#8-구현-예정-보고서-생성)
+- [성능](#성능)
+- [로드맵](#로드맵)
 
 ---
 ## Tech Stack
@@ -43,6 +70,39 @@
 | Test Tools | loadgen (부하 테스트), dbbench (DB 저장 성능) 직접 제작 |
 
 ---
+
+## Directory Structure
+
+```text
+shire-guard/
+├── .github/workflows/           # CI (fmt · clippy · build · test)
+├── backend/                     # Rust Backend (Axum)
+│   └── src/
+│       ├── main.rs              # 서버 시작 · 구성 요소 조립
+│       ├── config.rs            # 환경 변수 로드
+│       ├── state.rs             # 애플리케이션 공유 상태
+│       ├── lib.rs               # Backend 라이브러리 진입점
+│       ├── common/              # 공통 모듈 (에러 · 응답 · 미들웨어 · 메트릭)
+│       │   └── clients/         # 클라이언트(Redis · OpenSearch · ClickHouse 등)
+│       └── core/
+│           ├── consumer/        # [3] Kafka/RedPanda 메시지 소비 및 offset 관리
+│           ├── enrichment/      # [4] IOC 평판 조회
+│           │   └── providers/   #     AbuseIPDB · DNS · VirusTotal
+│           ├── playbook/        # [5] 플레이북
+│           └── storage/         # [6] 로그 저장
+├── docker/                      # Docker compose 파일 · 설정 · 초기화 SQL
+├── docs/
+│   ├── assets/                  # 문서 첨부 자료(이미지, mp4 등)
+│   ├── notes/                   # 개발 당시 작성한 메모
+│   ├── samples/                 # 외부 API · AI 응답 원본 예시
+│   ├── API.md                   # API 명세
+│   └── DEVELOPMENT.md           # 개발 환경 · 실행 · 테스트 가이드
+├── scripts/                     # loadgen(부하 테스트) · dbbench(DB 저장 성능) · 컨테이너 관리 · Ollama 테스트 스크립트
+└── README.md
+```
+
+---
+
 ## Architecture
 - **수집**: Vector가 이벤트를 정규화해 Kafka에 전달
 - **처리**: Consumer가 이벤트를 병렬로 꺼내 Enrichment(평판 조회) → Playbook(이벤트 판정) 순서로 처리
@@ -115,6 +175,8 @@ flowchart TB
 
 <!-- TODO 시연 데모영상 추가 예정 -->
 
+---
+
 ## Monitoring
 - **Metric 노출**: Rust Backend, Vector, Kafka / RedPanda가 각자의 Metric 엔드포인트를 제공하고, cAdvisor가 컨테이너 리소스 사용량을 노출
 - **Metric 수집**: Prometheus가 15초마다 각 대상의 Metric을 수집하여 저장
@@ -156,7 +218,7 @@ flowchart TB
 | [4] | RedPanda | `/public_metrics` 엔드포인트를 통해 브로커 자체 Metric을 노출 |
 | [5] | cAdvisor | Docker 컨테이너별 CPU 및 메모리 사용량을 수집할 수 있도록 Metric을 제공 |
 | [6] | Prometheus | 설정된 대상의 Metric을 15초마다 수집하고 시계열 데이터로 저장 (Prometheus 자체도 모니터링 대상으로 포함) |
-| [7] | Grafana | Prometheus Metric을 대시보드로 시각화하고 알림 규칙을 평가 (import 파일은 `docker/grafana/imports`에 JSON으로 보관 중) |
+| [7] | Grafana | Prometheus Metric을 대시보드로 시각화하고 알림 규칙을 평가 (import 파일은 `docker/grafana/imports`에 보관 중) |
 | [8] | Loki | Grafana의 알림 상태 이력을 저장하고 조회 |
 
 ---
