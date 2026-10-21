@@ -352,6 +352,8 @@ sequenceDiagram
 ### 4. Playbook 자동 판정
 
 > 연관 파일: [`engine.rs`](backend/src/core/playbook/engine.rs) · [`nodes.rs`](backend/src/core/playbook/nodes.rs) · [`condition.rs`](backend/src/core/playbook/condition.rs) · [`ai.rs`](backend/src/core/playbook/ai.rs) · [`002_seed.sql`](docker/postgres/init/002_seed.sql)
+>
+> 개발 노트: [`note-playbook-design.md`](docs/notes/note-playbook-design.md)
 
 - PostgreSQL `playbooks` 테이블에서 플레이북 설정(JSON 노드 배열) 관리
 - 서버 시작 시 활성 플레이북을 읽어 메모리에 적재 (양이 적고 이벤트마다 사용하므로 메모리에 보관)
