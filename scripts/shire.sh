@@ -2,7 +2,7 @@
 set -e
 
 COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../docker" && pwd)"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 if [ -f "$COMPOSE_DIR/.env" ]; then
   set -a
@@ -16,31 +16,32 @@ common_cmd() {
   local action=$2
   shift 2
 
+  # docker 명령이 실패하면 그 상태 코드로 바로 종료 (아래 서비스별 사용법 안내로 넘어가지 않게)
   case "$action" in
     logs)
-      docker logs -f "$container"
+      docker logs -f "$container" || exit $?
       ;;
     inspect)
-      docker inspect "$container"
+      docker inspect "$container" || exit $?
       ;;
     exec)
       if [ -z "$1" ]; then
-        docker exec -it "$container" sh
+        docker exec -it "$container" sh || exit $?
       else
-        docker exec -it "$container" "$@"
+        MSYS_NO_PATHCONV=1 docker exec -it "$container" "$@" || exit $?
       fi
       ;;
     start)
-      docker start "$container"
+      docker start "$container" || exit $?
       ;;
     stop)
-      docker stop "$container"
+      docker stop "$container" || exit $?
       ;;
     restart)
-      docker restart "$container"
+      docker restart "$container" || exit $?
       ;;
     *)
-      return 1
+      return 1   # 공통 명령이 아님 → 서비스별 전용 명령으로 넘어감
       ;;
   esac
 }
@@ -70,15 +71,15 @@ cmd_ollama() {
       fi
       docker exec -it ollama ollama run "$2"
       ;;
-    stop)
+    unload)
       if [ -z "$2" ]; then
-        echo "사용법: shire ollama stop <모델명>"
+        echo "사용법: shire ollama unload <모델명>"
         exit 1
       fi
       docker exec -it ollama ollama stop "$2"
       ;;
     *)
-      echo "사용법: shire ollama [logs|inspect|exec|start|stop|restart|list|ps|pull <모델명>|run <모델명>|stop <모델명>]"
+      echo "사용법: shire ollama [logs|inspect|exec|start|stop|restart|list|ps|pull <모델명>|run <모델명>|unload <모델명>]"
       exit 1
       ;;
   esac
@@ -105,15 +106,14 @@ cmd_kafka() {
 
   case "$1" in
     topics)
-      docker exec -it kafka //opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
+      docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
       ;;
     consume)
-      # 임시 디버깅용 — Rust Consumer 구현 전까지 사용
       if [ -z "$2" ]; then
         echo "사용법: shire kafka consume <토픽명>"
         exit 1
       fi
-      docker exec -it kafka //opt/kafka/bin/kafka-console-consumer.sh \
+      docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-console-consumer.sh \
         --bootstrap-server localhost:9092 \
         --topic "$2" \
         --from-beginning
@@ -169,6 +169,18 @@ cmd_opensearch() {
   esac
 }
 
+# ── OpenSearch Dashboards 관련 ────────────────────
+cmd_opensearch_dashboards() {
+  common_cmd opensearch-dashboards "$1" "${@:2}" && return
+
+  case "$1" in
+    *)
+      echo "사용법: shire opensearch-dashboards [logs|inspect|exec|start|stop|restart]"
+      exit 1
+      ;;
+  esac
+}
+
 # ── ClickHouse 관련 ──────────────────────────────
 cmd_clickhouse() {
   common_cmd clickhouse "$1" "${@:2}" && return
@@ -179,18 +191,6 @@ cmd_clickhouse() {
       ;;
     *)
       echo "사용법: shire clickhouse [logs|inspect|exec|start|stop|restart|cli]"
-      exit 1
-      ;;
-  esac
-}
-
-# ── Grafana 관련 ──────────────────────────────────
-cmd_grafana() {
-  common_cmd grafana "$1" "${@:2}" && return
-
-  case "$1" in
-    *)
-      echo "사용법: shire grafana [logs|inspect|exec|start|stop|restart]"
       exit 1
       ;;
   esac
@@ -241,6 +241,54 @@ cmd_dragonfly() {
   esac
 }
 
+# ── Grafana 관련 ──────────────────────────────────
+cmd_grafana() {
+  common_cmd grafana "$1" "${@:2}" && return
+
+  case "$1" in
+    *)
+      echo "사용법: shire grafana [logs|inspect|exec|start|stop|restart]"
+      exit 1
+      ;;
+  esac
+}
+
+# ── Loki 관련 ─────────────────────────────────────
+cmd_loki() {
+  common_cmd loki "$1" "${@:2}" && return
+
+  case "$1" in
+    *)
+      echo "사용법: shire loki [logs|inspect|exec|start|stop|restart]"
+      exit 1
+      ;;
+  esac
+}
+
+# ── Prometheus 관련 ───────────────────────────────
+cmd_prometheus() {
+  common_cmd prometheus "$1" "${@:2}" && return
+
+  case "$1" in
+    *)
+      echo "사용법: shire prometheus [logs|inspect|exec|start|stop|restart]"
+      exit 1
+      ;;
+  esac
+}
+
+# ── cAdvisor 관련 ─────────────────────────────────
+cmd_cadvisor() {
+  common_cmd cadvisor "$1" "${@:2}" && return
+
+  case "$1" in
+    *)
+      echo "사용법: shire cadvisor [logs|inspect|exec|start|stop|restart]"
+      exit 1
+      ;;
+  esac
+}
+
 # ── 전체 서비스 관리 ──────────────────────────────
 cmd_up() {
   docker compose -f "$COMPOSE_DIR/docker-compose.yml" up -d
@@ -279,7 +327,16 @@ cmd_stats() {
 }
 
 print_help() {
-  echo "Shire Guard CLI"
+  echo "Shire Guard Docker 서비스 관리 CLI"
+  echo ""
+  echo "실행 방법:"
+  echo "  bash scripts/shire.sh <명령>          저장소 최상위 폴더에서 실행"
+  echo "  ./shire.sh <명령>                     scripts 폴더에서 실행"
+  echo ""
+  echo "shire로 짧게 쓰려면 alias 등록 (현재 터미널에서만 유지, 계속 쓰려면 ~/.bashrc에 추가):"
+  echo "  alias shire=\"bash $SCRIPT_PATH\""
+  echo ""
+  echo "[Shire Guard CLI]"
   echo ""
   echo "전체 서비스 관리:"
   echo "  shire up                              전체 서비스 생성 및 실행"
@@ -291,10 +348,10 @@ print_help() {
   echo "  shire logs [서비스명]                  로그 확인 (생략 시 전체)"
   echo "  shire stats                           전체 컨테이너 리소스 사용량 확인"
   echo ""
-  echo "개별 서비스 공통 명령 (ollama, vector, kafka, redpanda, opensearch, clickhouse, grafana, postgres, redis, dragonfly):" 
+  echo "개별 서비스 공통 명령 (ollama, vector, kafka, redpanda, opensearch, opensearch-dashboards, clickhouse, postgres, redis, dragonfly, grafana, loki, prometheus, cadvisor):"
   echo "  shire <서비스명> logs                  해당 서비스 로그 확인"
   echo "  shire <서비스명> inspect               해당 서비스 상세 정보 확인"
-  echo "  shire <서비스명> exec [명령어]          컨테이너 내부 접속 또는 명령 실행"
+  echo "  shire <서비스명> exec [명령어]          컨테이너 내부 접속 또는 명령 실행 (loki는 셸이 없어 명령 지정만 가능)"
   echo "  shire <서비스명> start                 해당 서비스만 시작"
   echo "  shire <서비스명> stop                  해당 서비스만 중지"
   echo "  shire <서비스명> restart               해당 서비스만 재시작"
@@ -304,29 +361,26 @@ print_help() {
   echo "  shire ollama ps                       현재 로드된 모델 확인"
   echo "  shire ollama pull <모델명>             모델 설치"
   echo "  shire ollama run <모델명>              대화형 실행"
-  echo "  shire ollama stop <모델명>             모델 강제 언로드"
+  echo "  shire ollama unload <모델명>           모델 강제 언로드"
   echo ""
   echo "Vector 전용 명령:"
   echo "  shire vector validate                 설정 파일 문법 검증"
   echo ""
   echo "Kafka 전용 명령:"
   echo "  shire kafka topics                    토픽 목록 확인"
-  echo "  shire kafka consume <토픽명>           토픽 메시지 확인 (임시 디버깅용)"
+  echo "  shire kafka consume <토픽명>           토픽 메시지 확인"
   echo ""
   echo "RedPanda 전용 명령:"
   echo "  shire redpanda health                 클러스터 헬스체크"
   echo "  shire redpanda info                   클러스터/브로커 정보 확인"
   echo "  shire redpanda topics                 토픽 목록 확인"
-  echo "  shire redpanda consume <토픽명>        토픽 메시지 확인 (임시 디버깅용)"
+  echo "  shire redpanda consume <토픽명>        토픽 메시지 확인"
   echo ""
   echo "OpenSearch 전용 명령:"
   echo "  shire opensearch ping                 상태 확인"
   echo ""
   echo "ClickHouse 전용 명령:"
   echo "  shire clickhouse cli                  대화형 클라이언트 접속"
-  echo ""
-  echo "Grafana 전용 명령:"
-  echo "  (공통 명령만 사용)"
   echo ""
   echo "PostgreSQL 전용 명령:"
   echo "  shire postgres cli                    대화형 클라이언트 접속"
@@ -336,14 +390,17 @@ print_help() {
   echo ""
   echo "Dragonfly 전용 명령:"
   echo "  shire dragonfly cli                   대화형 클라이언트 접속 (redis-cli 호환)"
+  echo ""
+  echo "OpenSearch Dashboards · Grafana · Loki · Prometheus · cAdvisor 전용 명령:"
+  echo "  (공통 명령만 사용)"
 }
 
 # ── 진입점 ───────────────────────────────────────
 case "$1" in
-  ollama|vector|kafka|redpanda|opensearch|clickhouse|grafana|postgres|redis|dragonfly) 
+  ollama|vector|kafka|redpanda|opensearch|opensearch-dashboards|clickhouse|postgres|redis|dragonfly|grafana|loki|prometheus|cadvisor)
     service="$1"
     shift
-    "cmd_${service}" "$@"
+    "cmd_${service//-/_}" "$@"
     ;;
   up)
     cmd_up
