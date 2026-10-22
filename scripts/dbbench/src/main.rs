@@ -74,16 +74,16 @@ struct Args {
 const HELP_EXTRA: &str = "\
 예시:
   # OpenSearch / 총 50만 건 / 배치 1000 / 동시성 4 / _id 지정 (log_id)
-  dbbench os 500000 --batch 1000 --concurrency 4
+  ./dbbench.exe os 500000 --batch 1000 --concurrency 4
 
   # OpenSearch / 총 50만 건 / 배치 1000 / 동시성 4 / _id 미지정 (OpenSearch가 임의 생성)
-  dbbench os 500000 --batch 1000 --concurrency 4 --os-id false
+  ./dbbench.exe os 500000 --batch 1000 --concurrency 4 --os-id false
 
   # ClickHouse / 총 50만 건 / 배치 10000 / 동시성 4
-  dbbench ch 500000 --batch 10000 --concurrency 4
+  ./dbbench.exe ch 500000 --batch 10000 --concurrency 4
 
   # OpenSearch / 총 10만 건 / 배치 1000 / 동시성 4 / 지정한 JSON 파일의 doc를 샘플로 사용
-  dbbench os 100000 --sample my-doc.json
+  ./dbbench.exe os 100000 --sample my-doc.json
 
 동작:
   - doc 1건을 복제해 총 저장 건수만큼 전송 (--sample 생략 시 내장 doc SAMPLE_DOC 사용)
