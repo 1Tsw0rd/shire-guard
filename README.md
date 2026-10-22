@@ -469,9 +469,9 @@ sequenceDiagram
     "playbooks": [
       {
         "playbook_id": 2,
-        "name": "파일 다운로드 차단",
+        "name": "고위험 IP 차단",
         "action": "DENY",
-        "when": "(event_type eq file_download)"
+        "when": "(enrichment_src_ip.data.abuse_confidence_score gte 80)"
       },
       {
         "playbook_id": 4,
@@ -740,9 +740,9 @@ flowchart LR
   "playbooks": [ // 플레이북별 판정과 판정 당시 조건을 기록
     {
       "playbook_id": 2,
-      "name": "파일 다운로드 차단",
+      "name": "고위험 IP 차단",
       "action": "DENY",      // playbook_id 2 플레이북의 판정 (대응 노드에 설정된 action)
-      "when": "(event_type eq file_download)"
+      "when": "(enrichment_src_ip.data.abuse_confidence_score gte 80)" 
     },
     {
       "playbook_id": 4,
