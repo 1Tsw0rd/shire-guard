@@ -255,6 +255,15 @@ cmd_grafana() {
 
 # ── Loki 관련 ─────────────────────────────────────
 cmd_loki() {
+  # Loki 이미지에는 셸(sh/bash)이 없어 인자 없는 exec(대화형 접속)는 불가 → 대신 확인 방법 안내
+  if [ "$1" = "exec" ] && [ "$#" -eq 1 ]; then
+    echo "Loki 이미지에는 sh/bash가 없어 대화형 셸에 접속할 수 없습니다." >&2
+    echo "상태 확인: curl http://localhost:${LOKI_PORT:-3100}/ready" >&2
+    echo "로그 확인: shire loki logs" >&2
+    echo "설정 파일: $COMPOSE_DIR/loki/config/local-config.yaml" >&2
+    exit 1
+  fi
+
   common_cmd loki "$1" "${@:2}" && return
 
   case "$1" in
