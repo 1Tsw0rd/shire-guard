@@ -8,6 +8,35 @@ Shire Guard를 로컬에서 실행하고, 의존성을 관리하고, 테스트�
 > - 그 외: 저장소 루트
 > - 포트와 기본값은 `docker/.env.example` 기준 (변경했다면 실제 `.env` 값 확인)
 
+## 목차
+
+- [1. 사전 요구사항](#1-사전-요구사항)
+- [2. 프로젝트 초기화](#2-프로젝트-초기화)
+- [3. Docker Compose](#3-docker-compose)
+  - [3.1 메시지 브로커와 캐시 선택](#31-메시지-브로커와-캐시-선택)
+  - [3.2 실행](#32-실행)
+  - [3.3 운영](#33-운영)
+  - [3.4 접속 주소](#34-접속-주소)
+  - [3.5 Grafana 설정 (선택)](#35-grafana-설정-선택)
+- [4. 서버 실행](#4-서버-실행)
+- [5. 환경변수](#5-환경변수)
+  - [`docker/.env`](#dockerenv)
+  - [`backend/.env`](#backendenv)
+- [6. 사용된 Rust 의존성 추가 명령어](#6-사용된-rust-의존성-추가-명령어)
+  - [애플리케이션 의존성](#애플리케이션-의존성)
+  - [테스트 전용 의존성](#테스트-전용-의존성)
+- [7. 테스트](#7-테스트)
+  - [모듈별 테스트](#모듈별-테스트)
+  - [`#[ignore]` 테스트](#ignore-테스트)
+- [8. 브랜치와 커밋 규칙](#8-브랜치와-커밋-규칙)
+  - [SQL 쿼리를 수정한 경우 (`.sqlx/`)](#sql-쿼리를-수정한-경우-sqlx)
+- [9. 테스트 도구 (scripts/)](#9-테스트-도구-scripts)
+  - [shire.sh (Docker 서비스 관리)](#shiresh-docker-서비스-관리)
+  - [test.ollama.sh (Ollama 수동 테스트)](#testollamash-ollama-수동-테스트)
+  - [dbbench (DB 저장 성능)](#dbbench-db-저장-성능)
+  - [loadgen (부하 테스트)](#loadgen-부하-테스트)
+  - [부하 테스트 모니터링](#부하-테스트-모니터링)
+
 ---
 ## 1. 사전 요구사항
 
@@ -186,7 +215,7 @@ docker compose up -d 서비스명
 |---|---|---|
 | Grafana | http://localhost:3000 | 기본 계정 admin / admin |
 | OpenSearch Dashboards | http://localhost:5601 | 로그인 없음 |
-| Prometheus | http://localhost:9090 | Status → Targets에서 수집 상태 확인 |
+| Prometheus | http://localhost:9090 | Status → Target health에서 수집 상태 확인 |
 | ClickHouse Play | http://localhost:8123/play | `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` |
 | cAdvisor | http://localhost:8082 | 컨테이너별 CPU·메모리 |
 
@@ -236,7 +265,7 @@ Grafana 왼쪽 메뉴 Alerting → Alert rules → 오른쪽 상단 More → Imp
 
 **대시보드**
 
-Grafana 왼쪽 메뉴 Dashboards -> shire-guard -> shire-guard-alert.yaml 선택 (아래 스크린샷 참고) -> 오른쪽 상단 New -> Import dashboard -> Upload dashboard JSON file ->  `shire-guard/docker/grafana/imports/shire-guard-dashboards.json` 선택 후 Import
+Grafana 왼쪽 메뉴 Dashboards -> shire-guard -> shire-guard-alerts.yaml 선택 (아래 스크린샷 참고) -> 오른쪽 상단 New -> Import dashboard -> Upload dashboard JSON file ->  `shire-guard/docker/grafana/imports/shire-guard-dashboards.json` 선택 후 Import
 
 <img src="assets/grafana-import-dashboard.png" alt="대시보드 import 설정" width="600">
 
@@ -553,59 +582,136 @@ cargo sqlx prepare -- --all-targets
 
 ---
 
-## 9. 테스트 도구
+## 9. 테스트 도구 (scripts/)
 
-<!-- TODO 사용법 검증 후 정리 -->
+| 도구 | 설명 |
+|---|---|
+| [`shire.sh`](../scripts/shire.sh) | Docker 서비스 실행 · 로그 · 접속 등 관리 명령 모음 |
+| [`test.ollama.sh`](../scripts/test.ollama.sh) | Ollama 모델을 직접 호출해 응답을 확인하는 수동 테스트 도구 |
+| [`dbbench`](../scripts/dbbench) | OpenSearch · ClickHouse 저장 성능 측정 도구 |
+| [`loadgen`](../scripts/loadgen) | Vector로 이벤트를 대량 전송하는 부하 테스트 도구 |
 
-### loadgen (부하 테스트)
+### shire.sh (Docker 서비스 관리)
 
-Vector(`http://localhost:8081`)로 테스트 이벤트를 전송
+서비스별 로그 · 접속 · 시작/중지 등 관리 명령 모음 (명령 목록은 `--help` 참고)
 
 ```bash
-# scripts/loadgen에서 빌드
-cargo build --release
+# 서비스별 명령(logs · exec 등)은 해당 Docker 서비스가 실행 중이어야 함 (start 제외)
+cd scripts
 
-# 형식: loadgen <event_type> <시작 id> <Run당 건수> [동시 요청 수(기본 100)]
-loadgen file_download 7100000 15000 1000 --case malicious
-loadgen file_download 7100000 15000 1000 --reps 5 --cooldown 10 --case malicious
-loadgen login_failure 1 100 1 --case safe
+# 사용법 확인 (--help 인자 없이 실행해도 동일)
+./shire.sh
 
-# 다수결 테스트 (DENY 2 + HOLD 1 → 최종 DENY 기대)
-loadgen login_failure 4000000 10 10 --case safe --votes D1,D2,H1
+# 예시: Kafka 로그 확인, ClickHouse 접속
+./shire.sh kafka logs
+./shire.sh clickhouse exec
 ```
 
-| 옵션 | 설명 |
-|---|---|
-| `event_type` | `file_download` / `login_failure` / `dns_beacon` |
-| `--case` | `safe` / `malicious`(기본) — 실제 API로 확인한 고정 IOC 사용 |
-| `--reps` / `--cooldown` | 반복 횟수(기본 1) / 반복 사이 대기 초(기본 10) |
-| `--url` | 이벤트 수신 주소 (기본 `http://localhost:8081`) |
-| `--votes` | 다수결 테스트용 `test_votes` 필드 값 |
+### test.ollama.sh (Ollama 수동 테스트)
 
-- loadgen의 성공 건수는 Vector가 요청을 받았다는 뜻이며, 저장까지 끝났는지는 Backend `/metrics`, Consumer lag, 저장소 건수로 확인
+Ollama 모델을 직접 호출해 응답을 확인 (사용법은 `--help` 참고, [실행 결과 예시](samples/sample-test-ollama.md))
+
+```bash
+# ollama 컨테이너 실행 중이어야 함, 테스트 프롬프트는 스크립트 상단의 SYSTEM_PROMPT / PROMPT 수정
+cd scripts
+
+# 사용법 확인 (--help 인자 없이 실행해도 동일)
+./test.ollama.sh
+
+# 예시: 1번 모델(Qwen) 호출, 응답 한국어 번역
+./test.ollama.sh ollama 1 --ko
+```
 
 ### dbbench (DB 저장 성능)
 
-파이프라인 없이 OpenSearch / ClickHouse에 직접 대량 저장해 속도를 측정
+파이프라인 없이 OpenSearch / ClickHouse에 직접 대량 저장해 속도를 측정 (옵션과 동작 설명은 `--help` 참고)
 
 ```bash
-# scripts/dbbench에서 빌드
-cargo build --release
+cd scripts
 
-# OpenSearch 측정 전: 테스트 인덱스 생성 (없으면 실행 중단)
-curl -X PUT http://localhost:9200/bench-os -H "Content-Type: application/json" --data-binary @bench-os.json
+# 빌드 (코드 변경 시): 결과물 dbbench/target/release/dbbench.exe를 scripts로 복사
+(cd dbbench && cargo build --release) && cp dbbench/target/release/dbbench.exe .
 
-# 형식: dbbench <os|ch> <총 건수> [--batch 1000] [--concurrency 4]
-dbbench os 500000 --batch 1000 --concurrency 4
-dbbench os 500000 --batch 1000 --concurrency 4 --os-id false
-dbbench ch 500000 --batch 10000 --concurrency 4
+# 사용법 확인 (--help 인자 없이 실행해도 동일)
+./dbbench.exe --help
+
+# 예시: OpenSearch / ClickHouse에 총 50만 건 저장
+./dbbench.exe os 500000 --batch 1000 --concurrency 4
+./dbbench.exe ch 500000 --batch 10000 --concurrency 4
 ```
 
-| 옵션 | 설명 |
-|---|---|
-| `--batch` / `--concurrency` | 요청 1번당 문서 수(기본 1000) / 동시 요청 수(기본 4) |
-| `--sample` | 복제할 실제 문서 1건 (기본 `sample.json`) |
-| `--os-id` | `false`면 OpenSearch 자동 ID 사용 |
-| `--os-url` / `--os-index` | 기본 `http://localhost:9200` / `bench-os` |
-| `--ch-url` / `--ch-table` | 기본 `http://localhost:8123` / `shire.bench_event_logs` |
-| `--ch-user` / `--ch-password` | 환경변수 `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD`로도 지정 가능 |
+### loadgen (부하 테스트)
+
+Vector로 테스트 이벤트를 대량 전송해 Shire Guard 파이프라인 전체(수집 → Enrichment → 플레이북 판정 → 저장 → 실패 보관)를 검증하는 테스트 도구 (옵션과 동작 설명은 `--help` 참고)
+
+```bash
+# Vector · Backend · 저장소가 실행 중이어야 함 (실행 전 서비스 상태를 확인해서 출력)
+cd scripts
+
+# 빌드 (코드 변경 시): 결과물 loadgen/target/release/loadgen.exe를 scripts로 복사
+(cd loadgen && cargo build --release) && cp loadgen/target/release/loadgen.exe .
+
+# 사용법 확인 (--help 인자 없이 실행해도 동일)
+./loadgen.exe --help
+
+# 대화형 설정: 질문에 답하며 이벤트 종류 / 건수 / 동시성 등을 설정하고 실행
+./loadgen.exe setup
+
+# 예시: file_download / 위험 / 총 15000건 / 동시성 1000
+./loadgen.exe file_download 1 15000 1000
+
+# 예시: login_failure / 안전 / 총 10000건 + 실패 10건 + 거부 10건
+./loadgen.exe login_failure 15001 10000 --case safe --fail 10 --reject 10
+
+# 결과 확인 방법 (웹 주소, 확인 명령)
+./loadgen.exe check
+```
+
+- 실행이 끝나면 이번 실행의 기대값을 출력하며, `./loadgen.exe check`의 확인 결과와 비교
+- Backend를 끈 상태로 전송하면 이벤트가 Kafka에 쌓이고, Backend를 켜서 쌓인 이벤트의 처리 속도를 측정할 수 있음
+
+
+### 부하 테스트 모니터링
+
+loadgen으로 전송하는 동안 별도 터미널에서 실행 (Ctrl+C로 종료)
+
+```bash
+# 소비 / 저장 건수와 초당 속도 (1초 간격, Backend 실행 중이어야 함)
+metric() { curl -s 127.0.0.1:3001/metrics | awk -v n="$1" '$0 ~ "^"n {s+=$2} END{print int(s)}'; }
+prev_r=$(metric shireguard_consumer_messages_received_total); prev_s=$(metric shireguard_storage_events_sent_total); prev_t=$(date +%s)
+while true; do
+  sleep 1
+  recv=$(metric shireguard_consumer_messages_received_total)
+  sent=$(metric shireguard_storage_events_sent_total)
+  retry=$(metric shireguard_storage_retries_total)
+  now=$(date +%s); dt=$((now-prev_t)); [ $dt -le 0 ] && dt=1
+  echo "$(date +%T)  소비=${recv}  소비속도=$(( (recv-prev_r)/dt ))/s  저장완료=${sent}  저장속도=$(( (sent-prev_s)/dt ))/s  재시도=${retry}"
+  prev_r=$recv; prev_s=$sent; prev_t=$now
+done
+
+# 컨테이너 CPU / 메모리 (2초 간격, RedPanda 사용 시 kafka → redpanda)
+while true; do
+  docker stats --no-stream --format "{{.Name}}  CPU {{.CPUPerc}}  MEM {{.MemUsage}}" opensearch clickhouse kafka
+  echo "--- $(date +%T)"; sleep 2
+done
+
+# Kafka 토픽 누적 메시지 수 (5초 간격, Kafka 사용 시)
+while true; do
+  echo "$(date +%T)  토픽누적=$(MSYS_NO_PATHCONV=1 docker exec -e KAFKA_OPTS= kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic test_topic --time -1 2>/dev/null | awk -F: '{s+=$3} END{print s+0}')"
+  sleep 5
+done
+
+# 측정 후: 저장소별 평균 응답 시간
+curl -s 127.0.0.1:3001/metrics | awk '
+/^shireguard_storage_request_seconds_(sum|count)/ {
+  match($0, /db="[a-z]+"/); d = substr($0, RSTART+4, RLENGTH-5)
+  if ($0 ~ /_sum/) s[d] = $2; else c[d] = $2
+}
+END { for (d in s) printf "%-10s 요청 %d회  평균 %.2f초\n", d, c[d], s[d]/c[d] }'
+```
+
+```powershell
+# Rust Backend CPU (2초 간격, PowerShell)
+# 코어별 사용률의 합이라 100%를 넘을 수 있음 (예: 16코어를 모두 사용하면 1600)
+while ($true) { (Get-Counter '\Process(backend)\% Processor Time').CounterSamples.CookedValue; Start-Sleep 2 }
+```
