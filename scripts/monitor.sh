@@ -14,6 +14,7 @@ INTERVAL_CPU=2
 INTERVAL_KAFKA=5
 INTERVAL_DB=5
 INTERVAL_DOCKER=3
+INTERVAL_OPENSEARCH=5
 
 # 모니터링할 컨테이너 이름 (추가하려면 공백으로 구분해 이름 추가)
 CONTAINERS="opensearch clickhouse kafka"
@@ -127,11 +128,12 @@ mode_storage() {
 
 # ── [2] Rust 서버 CPU ─────────────────────────────
 
+# backend 프로세스가 없으면 typeperf가 -1을 반환하므로 음수는 값 없음으로 처리
 # Windows: typeperf로 1초 간격 2번 측정 후 마지막 값 사용 (첫 값은 비교 대상이 없어 부정확)
 # 매 회차 새로 실행하므로 Rust가 재시작되어도 영향 없음
 cpu_windows() {
   typeperf "\\Process(backend)\\% Processor Time" -si 1 -sc 2 2>/dev/null \
-    | tr -d '\r' | grep -E '^"[0-9]' | tail -n 1 | awk -F'"' '{ if ($4 != "") printf "%.1f", $4 }'
+    | tr -d '\r' | grep -E '^"[0-9]' | tail -n 1 | awk -F'"' '{ if ($4 != "" && $4 >= 0) printf "%.1f", $4 }'
 }
 
 # Linux: /proc/<pid>/stat의 CPU 사용 시간(utime + stime) 증가분 / 경과 시간
@@ -201,7 +203,8 @@ mode_kafka() {
 
   header "[3] Kafka 토픽누적 / commit / LAG" \
     "주기: ${INTERVAL_KAFKA}초 | 토픽: $topic | 그룹: $group (docker/.env) | 종료: Ctrl+C" \
-    "※ commit은 Rust가 5초마다 반영하므로 처리가 끝난 뒤에도 LAG가 잠시 남을 수 있음"
+    "※ commit은 Rust가 5초마다 반영하므로 처리가 끝난 뒤에도 LAG가 잠시 남을 수 있음" \
+    "※ Rust 기동 전(Consumer Group 없음)에는 토픽누적만 표시하고 commit은 그룹없음으로 표시"
 
   while true; do
     local started out line
@@ -213,7 +216,17 @@ mode_kafka() {
       END { if (n) printf "%.0f %s %s", e, (nc ? "-" : sprintf("%.0f", c)), (nc ? "-" : sprintf("%.0f", l)) }')
 
     if [ -z "$line" ]; then
-      echo "$(date +%T)  조회불가(Kafka 중단 또는 그룹/토픽 없음)"
+      # Consumer Group이 없으면(초기화 직후 Rust 기동 전) 토픽 끝 offset만 조회
+      local end
+      end=$(MSYS_NO_PATHCONV=1 docker exec -e KAFKA_OPTS= kafka /opt/kafka/bin/kafka-get-offsets.sh \
+        --bootstrap-server "localhost:$port" --topic "$topic" 2>/dev/null \
+        | awk -F: -v t="$topic" '$1 == t { s += $3; n++ } END { if (n) printf "%.0f", s }')
+      if [ -n "$end" ]; then
+        # "그룹없음" 한글 4글자 = 8칸, 숫자 칸(12)에 맞춰 공백 4칸 추가
+        printf "%s  토픽누적=%-12s commit=%s LAG=-\n" "$(date +%T)" "$(commas "$end")" "그룹없음    "
+      else
+        echo "$(date +%T)  조회불가(Kafka 중단 또는 토픽 없음)"
+      fi
     else
       local e c l
       read -r e c l <<< "$line"
@@ -339,6 +352,48 @@ mode_docker() {
   done
 }
 
+
+# ── [6] OpenSearch Bulk / indexing pressure ─────────
+
+mode_opensearch() {
+  local port base
+  port=$(read_env OPENSEARCH_PORT)
+  base="http://127.0.0.1:${port:-9200}"
+
+  header "[6] OpenSearch Bulk / indexing pressure" \
+    "주기: ${INTERVAL_OPENSEARCH}초 | 대상: $base | 종료: Ctrl+C" \
+    "---" \
+    "bulk     : OpenSearch가 지금 처리 중인 Bulk 요청 수 (Rust는 최대 8개, 넘으면 같은 Batch가 중복 전송된 것)" \
+    "pressure : 처리 중인 색인 데이터가 차지하는 메모리 / 한도 (한도를 넘으면 OpenSearch가 429로 거절)" \
+    "[ ]      : 처리 중인 Bulk 요청별 경과 시간"
+
+  while true; do
+    local started tasks stats
+    started=$(now_ns)
+    tasks=$(curl -s --max-time 2 "$base/_tasks?actions=indices:data/write/bulk&human")
+    stats=$(curl -s --max-time 2 "$base/_nodes/stats/indexing_pressure?filter_path=**.memory.current.all_in_bytes,**.memory.limit_in_bytes")
+
+    # 응답이 비었거나 형식이 다르면 0개 / 0MB로 정상처럼 보이지 않도록 따로 표시
+    if ! grep -q '"nodes"' <<< "$tasks" || ! grep -q 'all_in_bytes' <<< "$stats"; then
+      echo "$(date +%T)  OpenSearch 응답 없음"
+      wait_next "$started" "$INTERVAL_OPENSEARCH"
+      continue
+    fi
+
+    local times count used limit pct=""
+    times=$(grep -o '"running_time":"[^"]*"' <<< "$tasks" | cut -d'"' -f4 | tr '\n' ' ')
+    count=$(grep -o '"running_time"' <<< "$tasks" | wc -l | tr -d ' ')
+    used=$(grep -o '"all_in_bytes":[0-9]*' <<< "$stats" | cut -d: -f2 | awk '{s+=$1} END{printf "%.0f", s}')
+    limit=$(grep -o '"limit_in_bytes":[0-9]*' <<< "$stats" | cut -d: -f2 | awk '{s+=$1} END{printf "%.0f", s}')
+    # 한도 값을 찾으면 "/ 한도MB (사용률%)" 표시, 못 찾으면 사용량만 표시
+    if [ "${limit:-0}" -gt 0 ]; then
+      pct=$(awk -v u="$used" -v l="$limit" 'BEGIN{printf " / %dMB (%.0f%%)", l/1048576, u*100/l}')
+    fi
+    printf "%s  bulk=%-3s pressure=%sMB%s  [ %s]\n" "$(date +%T)" "$count" "$((used / 1048576))" "$pct" "$times"
+    wait_next "$started" "$INTERVAL_OPENSEARCH"
+  done
+}
+
 # ── 메뉴 ─────────────────────────────────────────
 
 print_help() {
@@ -353,6 +408,7 @@ print_help() {
   echo "  3  Kafka 토픽누적 / commit / LAG                  ${INTERVAL_KAFKA}초 주기"
   echo "  4  DB별 평균 응답 시간                            ${INTERVAL_DB}초 주기"
   echo "  5  컨테이너 CPU / 메모리                          ${INTERVAL_DOCKER}초 주기"
+  echo "  6  OpenSearch Bulk / indexing pressure            ${INTERVAL_OPENSEARCH}초 주기"
 }
 
 case "$1" in
@@ -361,6 +417,7 @@ case "$1" in
   3) mode_kafka ;;
   4) mode_db ;;
   5) mode_docker ;;
+  6) mode_opensearch ;;
   "" | -h | --help) print_help ;;
   *)
     echo "알 수 없는 번호: $1"
