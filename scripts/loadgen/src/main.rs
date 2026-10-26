@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -39,10 +39,11 @@ const DOWNLOAD_DOMAIN: &str = "cdn-update-service.net";
 // event_id / loadgen_id 앞에 붙는 값 (실제 로그와 섞여도 테스트 이벤트를 구분하기 위함)
 const ID_PREFIX: &str = "loadgen";
 
-// 거부 이벤트에 추가할 필드 수
-// OpenSearch는 인덱스 하나에 필드를 최대 1000개까지만 허용(index.mapping.total_fields.limit 기본값)하므로
-// 1200개를 넣으면 OpenSearch가 doc을 400으로 거부함
-const REJECT_FIELD_COUNT: usize = 1200;
+// 거부 이벤트에 넣을 필드: 템플릿(docker/opensearch/templates/event-logs.json)에 객체로 정의된 필드에 문자열을 넣어
+// OpenSearch가 doc을 400(mapper_parsing_exception)으로 거부하게 함
+// 매핑에 이미 있는 필드라 새 필드를 만들지 않으므로 매핑 갱신 부담이 없음
+// (거부 이벤트는 login_failure 기반이라 도메인이 없어 Backend가 이 필드를 만들지 않으므로 보낸 값이 그대로 OpenSearch로 감)
+const REJECT_FIELD: &str = "enrichment_dst_domain";
 
 // Backend /health 포트 (Backend main.rs에 3001로 고정되어 있음)
 const BACKEND_PORT: u16 = 3001;
@@ -81,7 +82,7 @@ const HELP_EXTRA: &str = "\
  [ 실패 / 거부 이벤트 ] 정상 이벤트 사이에 섞어서 전송
    --fail N           event_id 없음 → Backend 파싱 실패 → Postgres storage_failures 저장
                       추적용 loadgen_id 필드 포함 (loadgen-failure-<번호>)
-   --reject N         필드 1200개 추가 → OpenSearch가 필드 수 제한(1000개) 초과로 거부 → storage_failures 저장
+   --reject N         객체 필드(enrichment_dst_domain)에 문자열 \"x\" → OpenSearch가 타입 불일치로 거부 → storage_failures 저장
                       event_id는 loadgen-reject-<번호>, OpenSearch / ClickHouse에는 저장 안 됨
 
  [ 다수결 테스트 ] --votes
@@ -168,7 +169,7 @@ impl Case {
 // 보낼 이벤트의 종류
 // Normal: 정상적으로 처리되는 이벤트 (event_id 있음)
 // Failure: Backend에서 파싱에 실패하도록 만든 이벤트 (event_id 없음)
-// Reject: OpenSearch가 저장을 거부하도록 만든 이벤트 (필드 1200개)
+// Reject: OpenSearch가 저장을 거부하도록 만든 이벤트 (객체 필드에 문자열)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Normal(EventType),
@@ -192,7 +193,7 @@ impl EventSpec {
         let name = match self.kind {
             Kind::Normal(t) => t.as_str().to_string(),
             Kind::Failure => "실패 이벤트 (event_id 없음)".to_string(),
-            Kind::Reject => format!("거부 이벤트 (필드 {REJECT_FIELD_COUNT}개)"),
+            Kind::Reject => format!("거부 이벤트 ({REJECT_FIELD}에 문자열)"),
         };
         let votes = match &self.votes {
             Some(v) => format!(" / 다수결 {v}"),
@@ -240,7 +241,7 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     fail: u64,
 
-    /// 회차당 함께 보낼 거부 이벤트 수 (필드 1200개 → OpenSearch 거부 → storage_failures 저장)
+    /// 회차당 함께 보낼 거부 이벤트 수 (객체 필드에 문자열 → OpenSearch 거부 → storage_failures 저장)
     #[arg(long, default_value_t = 0)]
     reject: u64,
 
@@ -378,16 +379,14 @@ fn build_payload(spec: &EventSpec, number: u64) -> Value {
             format!("{ID_PREFIX}-failure-{number}"),
             base_fields(EventType::LoginFailure, spec.case),
         ),
-        // 거부 이벤트: login_failure 기본 필드 + event_id + 추가 필드 1200개 (OpenSearch가 필드 수 초과로 거부)
+        // 거부 이벤트: login_failure 기본 필드 + event_id + 객체 필드에 문자열 (OpenSearch가 타입 불일치로 거부)
         Kind::Reject => {
             let mut payload = with_id_first(
                 "event_id",
                 format!("{ID_PREFIX}-reject-{number}"),
                 base_fields(EventType::LoginFailure, spec.case),
             );
-            if let Some(fields) = payload.as_object_mut() {
-                fields.extend(reject_filler().clone());
-            }
+            payload[REJECT_FIELD] = json!("x");
             payload
         }
     }
@@ -402,17 +401,6 @@ fn with_id_first(key: &str, id: String, fields: Value) -> Value {
         map.extend(rest);
     }
     Value::Object(map)
-}
-
-// 거부 이벤트에 넣을 추가 필드 1200개 (filler_0000 ~ filler_1199, 값은 모두 "x")
-// OnceLock: 처음 호출할 때 한 번만 만들고, 이후에는 만들어 둔 값을 재사용
-fn reject_filler() -> &'static serde_json::Map<String, Value> {
-    static FILLER: OnceLock<serde_json::Map<String, Value>> = OnceLock::new();
-    FILLER.get_or_init(|| {
-        (0..REJECT_FIELD_COUNT)
-            .map(|i| (format!("filler_{i:04}"), json!("x")))
-            .collect()
-    })
 }
 
 // ── 예상 결과 (docker/postgres/init/002_seed.sql의 플레이북 기준) ─────────────
@@ -1090,7 +1078,7 @@ static MENU: [MenuItem; 6] = [
         votes: false,
     },
     MenuItem {
-        title: "거부 이벤트 (필드 1200개 → OpenSearch 거부 → storage_failures 저장)",
+        title: "거부 이벤트 (객체 필드에 문자열 → OpenSearch 거부 → storage_failures 저장)",
         kind: Kind::Reject,
         choose_case: false,
         votes: false,
@@ -1105,7 +1093,7 @@ static MENU: [MenuItem; 6] = [
 
 // JSON 예시의 필드별 설명 (메뉴에서 각 줄 끝에 주석으로 표시)
 // 여기에 없는 필드는 설명 없이 표시됨
-const FIELD_HELP: [(&str, &str); 15] = [
+const FIELD_HELP: [(&str, &str); 16] = [
     ("event_id", "이벤트 ID (실행할 때 지정한 시작 번호부터 1씩 증가)"),
     ("loadgen_id", "추적용 ID (event_id가 없어 Backend 파싱 실패, storage_failures에서 찾을 때 사용)"),
     ("event_type", "이벤트 종류"),
@@ -1121,6 +1109,7 @@ const FIELD_HELP: [(&str, &str); 15] = [
     ("hostname", "외부와 통신한 내부 PC 이름"),
     ("request_interval_seconds", "통신 주기 (초)"),
     ("test_votes", "판정을 낼 다수결 테스트용 플레이북 이름 목록"),
+    ("enrichment_dst_domain", "OpenSearch 거부용 (객체로 정의된 필드에 문자열을 넣어 타입 불일치 발생)"),
 ];
 
 // 대화형 실행: 설정 → 확인 → 실행 / 처음부터 다시 / 종료
@@ -1298,9 +1287,6 @@ fn example_value(item: &MenuItem) -> Value {
     let mut example = make(Case::Safe);
 
     if let Some(fields) = example.as_object_mut() {
-        // 거부 이벤트의 추가 필드 1200개는 화면에 다 보여줄 수 없으므로 제외 (render_example에서 한 줄로 설명)
-        fields.retain(|key, _| !key.starts_with("filler_"));
-
         for (key, value) in fields.iter_mut() {
             let text = value.as_str().unwrap_or_default().to_string();
             if key == "event_id" || key == "loadgen_id" {
@@ -1339,12 +1325,6 @@ fn render_example(item: &MenuItem) -> String {
             }
             None => out.push(line.to_string()),
         }
-    }
-    if item.kind == Kind::Reject {
-        out.push(format!(
-            "+ 추가 필드 filler_0000 ~ filler_{:04} (값 \"x\", 총 {REJECT_FIELD_COUNT}개, OpenSearch 필드 수 제한 1000개 초과용)",
-            REJECT_FIELD_COUNT - 1
-        ));
     }
     out.join("\n")
 }
@@ -1509,14 +1489,12 @@ mod tests {
         assert_eq!(p["test_votes"], "D1,D2,H1");
     }
 
-    // 시나리오 6: 거부 이벤트는 event_id가 있고, 필드가 OpenSearch 제한(1000개)보다 많은지
+   // 시나리오 6: 거부 이벤트는 event_id가 있고, 객체 필드에 문자열이 들어가는지
     #[test]
     fn payload_reject() {
         let p = build_payload(&spec(Kind::Reject, Case::Safe, 1, None), 9);
         assert_eq!(p["event_id"], "loadgen-reject-9");
-        assert_eq!(p["filler_0000"], "x");
-        assert_eq!(p["filler_1199"], "x");
-        assert!(p.as_object().unwrap().len() > 1000);
+        assert_eq!(p[REJECT_FIELD], "x");
     }
 
     // 시나리오 7: 예상 결과가 seed 플레이북 기준과 같은지
@@ -1606,7 +1584,7 @@ mod tests {
 
         let reject = example_value(&MENU[4]);
         assert_eq!(reject["event_id"], "loadgen-reject-<번호>");
-        assert!(reject.get("filler_0000").is_none());
+        assert_eq!(reject[REJECT_FIELD], "x");
 
         let votes = example_value(&MENU[5]);
         assert_eq!(votes["test_votes"], "<다수결 설정 시 세팅>");
@@ -1623,7 +1601,6 @@ mod tests {
                 assert!(line.contains("  // "), "설명 없는 필드: {key}");
             }
         }
-        assert!(render_example(&MENU[4]).contains("filler_1199"));
     }
 
     // 시나리오 13: 한글은 2칸, 영문/숫자는 1칸
