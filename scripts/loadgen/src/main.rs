@@ -53,6 +53,12 @@ const DEFAULT_URL: &str = "http://localhost:8081";
 // 실행 가능한 최대 번호 (event_id 번호 계산이 u64 범위를 넘지 않도록 제한)
 const MAX_NUMBER: u64 = 1_000_000_000_000_000;
 
+// ── 재전송 설정 ──
+// Vector가 Kafka로 전달하지 못했다고 응답하는 등 일시적인 오류면 같은 이벤트(같은 event_id)를 다시 보냄
+const RETRY_LIMIT: Duration = Duration::from_secs(90); // 이벤트 1건당 재전송을 시도하는 최대 시간
+const RETRY_FIRST_DELAY: Duration = Duration::from_millis(500); // 첫 재전송 전 대기 시간 (이후 2배씩 증가)
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(5); // 재전송 전 대기 시간의 최대값
+
 // --help 하단에 출력할 설명과 사용 예시
 const HELP_EXTRA: &str = "\
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -87,6 +93,13 @@ const HELP_EXTRA: &str = "\
    --reps N           같은 설정을 N회 반복해 평균을 냄 (회차마다 event_id 번호는 이어서 증가)
    --cooldown 초      회차 사이 대기 시간
 
+ [ 출력 ] -v, --verbose
+   -v                 설정 / 예상 결과 / 서비스 상태 / 결과 요약 / 기대값까지 자세히 출력
+
+ [ 재전송 ]
+   Vector가 Kafka 전달 실패(HTTP 400 failed to deliver)나 일시적 오류(408, 429, 5xx)로 응답하거나
+   Vector에 연결하지 못하면, 같은 이벤트를 최대 90초 동안 다시 전송 (0.5초부터 2배씩, 최대 5초 간격)
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  [ 예시 ]
    # file_download / 위험 / 총 15000건 / 동시성 1000
@@ -103,6 +116,9 @@ const HELP_EXTRA: &str = "\
 
    # 반복: file_download / 위험 / 총 15000건 / 동시성 1000 / 5회 / 회차 사이 10초 대기
    ./loadgen.exe file_download 50001 15000 1000 --reps 5 --cooldown 10
+
+   # 자세한 출력: file_download / 위험 / 총 15000건 / 동시성 1000
+   ./loadgen.exe file_download 60001 15000 1000 -v
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  [ 참고 ]
@@ -240,6 +256,10 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     cooldown: u64,
 
+    /// 자세히 출력
+    #[arg(short, long)]
+    verbose: bool,
+
     /// 도움말 출력
     // ArgAction::Help: 이 옵션이 입력되면 help를 출력하고 종료 (값은 사용하지 않으므로 dead_code 경고 끔)
     #[arg(short, long, action = clap::ArgAction::Help)]
@@ -255,6 +275,7 @@ struct RunConfig {
     url: String,           // Vector 수신 주소
     reps: u32,             // 반복 횟수
     cooldown: u64,         // 반복 사이 대기 시간(초)
+    verbose: bool,         // true: 자세히 출력 / false: 회차마다 결과 1줄
 }
 
 impl RunConfig {
@@ -262,12 +283,27 @@ impl RunConfig {
     fn total_per_run(&self) -> u64 {
         self.specs.iter().map(|s| s.count).sum()
     }
+
+    // 간단 출력에서 실행을 구분하는 이름: 묶음 종류를 +로 연결 (예: file_download+fail+reject)
+    // 실패 / 거부 이벤트는 인자 옵션 이름(--fail, --reject)과 같게 표시
+    fn label(&self) -> String {
+        self.specs
+            .iter()
+            .map(|s| match s.kind {
+                Kind::Normal(t) => t.as_str(),
+                Kind::Failure => "fail",
+                Kind::Reject => "reject",
+            })
+            .collect::<Vec<_>>()
+            .join("+")
+    }
 }
 
 // 회차 1번의 결과
 struct RunResult {
     success: u64,
-    fail: u64,
+    fail: u64,                   // 재전송까지 마친 뒤에도 실패한 이벤트 수 (최종 실패)
+    retried: u64,                // 한 번 이상 재전송한 이벤트 수
     elapsed: f64,                // 소요 시간(초)
     first_error: Option<String>, // 첫 번째 실패의 원인 (실패가 없으면 None)
 }
@@ -600,6 +636,7 @@ fn print_expected_summary(config: &RunConfig) {
     }
     box_line("");
     box_line("※ 이전 실행과 번호가 겹치면 이전 실행분까지 합산되어 기대값보다 크게 나옴");
+    box_line("※ 최종 실패가 있으면 그 건수만큼 기대값에서 빼고 비교 (재전송은 같은 event_id로 보내므로 중복 저장 여부는 고유 event_id 수로 확인)");
     box_line("※ seed 플레이북 기준이며, 외부 조회(AbuseIPDB, VirusTotal, DNS) 오류 시 HOLD가 추가되어 달라질 수 있음");
     box_bottom();
 }
@@ -683,33 +720,76 @@ impl Interleaver {
 
 // ── 전송 ─────────────────────────────────────
 
-// 이벤트 1건 전송: 성공하면 Ok, 실패하면 원인을 담은 Err
-async fn send_event(client: &Client, url: &str, payload: &Value) -> Result<(), String> {
+// 요청 1번의 실패 종류
+enum SendError {
+    Retry(String), // 다시 보내면 성공할 수 있는 일시적 오류
+    Fail(String),  // 다시 보내도 같은 결과이거나, 다시 보내면 중복될 수 있는 오류 → 바로 최종 실패
+}
+
+// 다시 보낼 HTTP 오류인지 판단
+// - 400 + "failed to deliver": Vector가 Kafka로 전달하지 못함 (Kafka 장애 중 실제로 받은 응답: Contents failed to deliver to sink)
+// - 408 / 429 / 5xx: HTTP 표준에서 일시적인 오류를 뜻하는 상태 코드
+// 그 외 4xx(잘못된 JSON 등)는 다시 보내도 같은 결과이므로 제외
+fn is_retryable_status(code: u16, body: &str) -> bool {
+    (code == 400 && body.contains("failed to deliver")) || code == 408 || code == 429 || (500..600).contains(&code)
+}
+
+// 요청 1번 전송
+async fn send_once(client: &Client, url: &str, payload: &Value) -> Result<(), SendError> {
     match client.post(url).json(payload).send().await {
         Ok(resp) if resp.status().is_success() => Ok(()),
-        // HTTP 응답은 받았지만 오류 상태 (예: 400 잘못된 요청, 503 Vector 처리 불가)
+        // HTTP 응답은 받았지만 오류 상태
         Ok(resp) => {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            Err(format!("HTTP {status}: {body}"))
+            let msg = format!("HTTP {status}: {body}");
+            if is_retryable_status(status.as_u16(), &body) { Err(SendError::Retry(msg)) } else { Err(SendError::Fail(msg)) }
         }
-        // 응답 자체를 받지 못함 (예: Vector가 꺼져 있어 연결 거부)
-        Err(e) => Err(format!("전송 실패: {e}")),
+        // 연결 단계에서 실패 (예: Vector 재시작 중 연결 거부): 요청이 Vector에 도착하지 않았으므로 다시 보내도 중복되지 않음
+        Err(e) if e.is_connect() => Err(SendError::Retry(format!("연결 실패: {e}"))),
+        // 요청을 보낸 뒤 실패 (예: 응답 전에 연결이 끊김): Vector가 이미 받았을 수 있어 다시 보내면 중복될 수 있으므로 재전송하지 않음
+        Err(e) => Err(SendError::Fail(format!("전송 실패: {e}"))),
+    }
+}
+
+// 이벤트 1건 전송: 일시적 오류면 같은 payload(같은 event_id)로 다시 보냄
+// 대기 시간: 0.5초 → 1초 → 2초 → 4초 → 5초 → 5초 ... (RETRY_LIMIT이 지나면 포기)
+// 대기하는 동안에도 동시성 자리(permit)를 차지하므로, 재전송 요청이 몰려도 동시 요청 수는 설정한 동시성을 넘지 않음
+// 반환: (재전송 횟수, 최종 결과)
+async fn send_event(client: &Client, url: &str, payload: &Value) -> (u32, Result<(), String>) {
+    let started = Instant::now();
+    let mut delay = RETRY_FIRST_DELAY;
+    let mut retries = 0;
+    loop {
+        match send_once(client, url, payload).await {
+            Ok(()) => return (retries, Ok(())),
+            Err(SendError::Fail(e)) => return (retries, Err(e)),
+            Err(SendError::Retry(e)) => {
+                if started.elapsed() >= RETRY_LIMIT {
+                    return (retries, Err(format!("{}초 동안 재전송 {retries}회 후 포기: {e}", RETRY_LIMIT.as_secs())));
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(RETRY_MAX_DELAY);
+                retries += 1;
+            }
+        }
     }
 }
 
 // 회차 1번 실행: 모든 묶음을 섞어서 전송하고 결과를 집계
-// first_number: 이번 회차 첫 이벤트의 번호
-async fn run_once(client: &Client, config: &RunConfig, first_number: u64) -> RunResult {
+// rep: 이번 회차 순서 (0부터), first_number: 이번 회차 첫 이벤트의 번호
+async fn run_once(client: &Client, config: &RunConfig, rep: u32, first_number: u64) -> RunResult {
     let total = config.total_per_run();
     let last_number = first_number + total - 1;
-    println!(
-        "── [ 회차 시작 ] 번호 {} ~ {} (총 {}건, 동시성 {}) ──",
-        first_number,
-        last_number,
-        with_commas(total),
-        config.parallel
-    );
+    if config.verbose {
+        println!(
+            "── [ 회차 시작 ] 번호 {} ~ {} (총 {}건, 동시성 {}) ──",
+            first_number,
+            last_number,
+            with_commas(total),
+            config.parallel
+        );
+    }
 
     let counts: Vec<u64> = config.specs.iter().map(|s| s.count).collect();
     let mut interleaver = Interleaver::new(&counts);
@@ -717,7 +797,7 @@ async fn run_once(client: &Client, config: &RunConfig, first_number: u64) -> Run
     let url: Arc<str> = Arc::from(config.url.as_str()); // 모든 Task가 같은 주소를 복사 없이 공유
     let mut set = JoinSet::new();
 
-    let mut result = RunResult { success: 0, fail: 0, elapsed: 0.0, first_error: None };
+    let mut result = RunResult { success: 0, fail: 0, retried: 0, elapsed: 0.0, first_error: None };
     let started = Instant::now();
 
     for offset in 0..total {
@@ -746,26 +826,48 @@ async fn run_once(client: &Client, config: &RunConfig, first_number: u64) -> Run
     }
     result.elapsed = started.elapsed().as_secs_f64();
 
-    println!(
-        "▶ 완료: 성공 {} / 실패 {} ({:.2}초, {:.1} req/s)",
-        with_commas(result.success),
-        with_commas(result.fail),
-        result.elapsed,
-        total as f64 / result.elapsed
-    );
+    if config.verbose {
+        println!(
+            "▶ 완료: 성공 {} / 실패 {} / 재전송 {} ({:.2}초, {:.1} req/s)",
+            with_commas(result.success),
+            with_commas(result.fail),
+            with_commas(result.retried),
+            result.elapsed,
+            total as f64 / result.elapsed
+        );
+    } else {
+        // 간단 출력: 1줄 (여러 loadgen을 동시에 실행해도 구분되도록 이벤트 종류와 번호 범위를 앞에 표시)
+        // 예: file_download+fail+reject 1~1200000 | 1,200,000건 | 성공 1,200,000 / 실패 0 / 재전송 0 | 49.14초 (24,420 req/s)
+        let rep_prefix = if config.reps > 1 { format!("[{}/{}] ", rep + 1, config.reps) } else { String::new() };
+        println!(
+            "{rep_prefix}{} {}~{} | {}건 | 성공 {} / 실패 {} / 재전송 {} | {:.2}초 ({} req/s)",
+            config.label(),
+            first_number,
+            last_number,
+            with_commas(total),
+            with_commas(result.success),
+            with_commas(result.fail),
+            with_commas(result.retried),
+            result.elapsed,
+            with_commas((total as f64 / result.elapsed) as u64)
+        );
+    }
     if let Some(e) = &result.first_error {
-        println!("  첫 실패 원인: {e}");
+        println!("  ⚠ 첫 실패 원인: {e}");
     }
     result
 }
 
 // Task 1개의 결과를 집계에 반영
 // JoinError: Task가 panic 등으로 비정상 종료된 경우 (전송 여부를 알 수 없으므로 실패로 집계)
-fn tally(result: &mut RunResult, joined: Result<Result<(), String>, tokio::task::JoinError>) {
-    let outcome = match joined {
+fn tally(result: &mut RunResult, joined: Result<(u32, Result<(), String>), tokio::task::JoinError>) {
+    let (retries, outcome) = match joined {
         Ok(sent) => sent,
-        Err(e) => Err(format!("전송 Task 비정상 종료: {e}")),
+        Err(e) => (0, Err(format!("전송 Task 비정상 종료: {e}"))),
     };
+    if retries > 0 {
+        result.retried += 1;
+    }
     match outcome {
         Ok(()) => result.success += 1,
         Err(e) => {
@@ -810,10 +912,12 @@ async fn execute(config: &RunConfig, client: &Client) {
     for rep in 0..config.reps {
         // 회차마다 번호를 이어서 사용 (1회차가 1~100이면 2회차는 101~200)
         let first_number = config.start_id + rep as u64 * total;
-        runs.push(run_once(client, config, first_number).await);
+        runs.push(run_once(client, config, rep, first_number).await);
 
         if rep + 1 < config.reps {
-            println!("-- 쿨다운 {}초 대기 --", config.cooldown);
+            if config.verbose {
+                println!("-- 쿨다운 {}초 대기 --", config.cooldown);
+            }
             tokio::time::sleep(Duration::from_secs(config.cooldown)).await;
         }
     }
@@ -824,10 +928,30 @@ async fn execute(config: &RunConfig, client: &Client) {
     let avg_time = runs.iter().map(|r| r.elapsed).sum::<f64>() / reps;
     let last_number = config.start_id + config.reps as u64 * total - 1;
 
+    // 간단 출력: 반복할 때만 평균 1줄 추가 (회차별 결과는 run_once에서 출력)
+    if !config.verbose {
+        if config.reps > 1 {
+            println!(
+                "[평균 {}회] {} {}~{} | 성공 {avg_success:.1} / 실패 {avg_fail:.1} | {avg_time:.2}초 ({} req/s)",
+                config.reps,
+                config.label(),
+                config.start_id,
+                last_number,
+                with_commas((total as f64 / avg_time) as u64)
+            );
+        }
+        return;
+    }
+
+    let retried: u64 = runs.iter().map(|r| r.retried).sum();
+
     println!();
     box_top(&format!("결과 요약 ({}회 반복, 동시성 {})", config.reps, config.parallel));
     box_line(&format!("사용한 번호: {} ~ {}", config.start_id, last_number));
     box_line(&format!("평균 성공: {avg_success:.1} / 평균 실패: {avg_fail:.1}"));
+    if retried > 0 {
+        box_line(&format!("재전송한 이벤트 합계: {}", with_commas(retried)));
+    }
     box_line(&format!("평균 처리시간: {avg_time:.2}초 ({:.1} req/s)", total as f64 / avg_time));
     box_bottom();
     println!();
@@ -836,12 +960,13 @@ async fn execute(config: &RunConfig, client: &Client) {
     println!(" ▶ 결과 확인 방법: ./loadgen.exe check");
 }
 
-// 인자 방식 실행: 설정 / 예상 결과 → 서비스 상태 → 전송
+// 인자 방식 실행: (-v일 때만 설정 / 예상 결과 / 서비스 상태) → 전송
 async fn run(config: RunConfig) {
-    print_plan(&config);
     let client = Client::new();
-    let ports = load_ports();
-    check_services(&client, &ports).await;
+    if config.verbose {
+        print_plan(&config);
+        check_services(&client, &load_ports()).await;
+    }
     execute(&config, &client).await;
 }
 
@@ -1126,7 +1251,8 @@ fn ask_options(specs: Vec<EventSpec>) -> RunConfig {
     // 쿨다운은 회차 사이 대기 시간이므로 2회 이상 반복할 때만 질문
     let cooldown = if reps > 1 { ask_number(" ▶ 쿨다운 초 [기본 10]: ", Some(10), 0, MAX_COOLDOWN) } else { 0 };
 
-    RunConfig { specs, start_id, parallel, url: DEFAULT_URL.to_string(), reps, cooldown }
+    // 대화형은 최종 확인 화면이 필요하므로 항상 자세히 출력
+    RunConfig { specs, start_id, parallel, url: DEFAULT_URL.to_string(), reps, cooldown, verbose: true }
 }
 
 // 현재 설정한 이벤트 묶음 목록 출력
@@ -1309,6 +1435,7 @@ async fn main() {
         url: args.url,
         reps: args.reps,
         cooldown: args.cooldown,
+        verbose: args.verbose,
     };
     if let Err(e) = validate(&config) {
         eprintln!("{e}");
@@ -1447,6 +1574,7 @@ mod tests {
             url: DEFAULT_URL.to_string(),
             reps,
             cooldown: 0,
+            verbose: false,
         };
         assert!(validate(&config(10, 1, 5, 1)).is_ok());
         assert!(validate(&config(10, 1, 0, 1)).is_err()); // 동시성 0
@@ -1513,5 +1641,14 @@ mod tests {
         assert_eq!(with_commas(999), "999");
         assert_eq!(with_commas(1000), "1,000");
         assert_eq!(with_commas(1_000_010), "1,000,010");
+    }
+
+    // 시나리오 15: 재전송할 HTTP 응답인지 판단
+    #[test]
+    fn retryable_status() {
+        assert!(is_retryable_status(400, r#"{"code":400,"message":"Contents failed to deliver to sink"}"#));
+        assert!(!is_retryable_status(400, r#"{"code":400,"message":"Failed decoding body"}"#));
+        assert!(is_retryable_status(408, "") && is_retryable_status(429, "") && is_retryable_status(503, ""));
+        assert!(!is_retryable_status(404, "") && !is_retryable_status(422, ""));
     }
 }
