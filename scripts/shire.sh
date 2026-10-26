@@ -118,8 +118,111 @@ cmd_kafka() {
         --topic "$2" \
         --from-beginning
       ;;
+    groups)
+      # Consumer Group 목록
+      docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-consumer-groups.sh \
+        --bootstrap-server "localhost:${KAFKA_PORT:-9092}" \
+        --list
+      ;;
+    lag)
+      # Consumer Group의 partition별 commit offset, 토픽 끝 offset, LAG 확인
+      # 그룹명을 생략하면 docker/.env의 KAFKA_GROUP_ID 사용
+      docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-consumer-groups.sh \
+        --bootstrap-server "localhost:${KAFKA_PORT:-9092}" \
+        --describe --group "${2:-$KAFKA_GROUP_ID}"
+      ;;
+    reset)
+      # 테스트용 offset 초기화 (docker/.env의 KAFKA_GROUP_ID, KAFKA_TOPIC 대상)
+      #   latest  : commit 위치를 토픽 끝으로 옮김 -> 남아 있던 이벤트는 처리하지 않고 건너뜀 (LAG 0)
+      #   earliest: commit 위치를 토픽 맨 앞으로 옮김 -> 보관 중인 이벤트를 전부 다시 처리
+      # --execute 없이 실행하면 옮길 위치만 보여주고 변경하지 않음 (--dry-run)
+      # Consumer(Rust)가 실행 중이면 Kafka가 거부함 (그룹에 연결된 Consumer가 없어야 변경 가능)
+      if [ "$2" != "latest" ] && [ "$2" != "earliest" ]; then
+        echo "사용법: shire kafka reset <latest|earliest> [--execute]"
+        exit 1
+      fi
+      local mode="--dry-run"
+      [ "${3:-}" = "--execute" ] && mode="--execute"
+      docker exec -it -e KAFKA_OPTS= kafka //opt/kafka/bin/kafka-consumer-groups.sh \
+        --bootstrap-server "localhost:${KAFKA_PORT:-9092}" \
+        --group "$KAFKA_GROUP_ID" --topic "$KAFKA_TOPIC" \
+        --reset-offsets "--to-$2" "$mode"
+      if [ "$mode" = "--dry-run" ]; then
+        echo ""
+        echo "미리보기만 실행됨 (변경 안 함). 적용하려면: shire kafka reset $2 --execute"
+      fi
+      ;;
+    purge)
+      # (테스트용) 토픽 완전 초기화: 메시지를 모두 지우고 offset을 0부터 다시 시작 (docker/.env의 KAFKA_TOPIC, KAFKA_GROUP_ID 대상)
+      # 순서: Consumer Group 삭제 -> 토픽 삭제 -> 삭제 완료 대기 -> 토픽 재생성
+      local server="localhost:${KAFKA_PORT:-9092}"
+      local bin="//opt/kafka/bin"
+
+      if [ "${2:-}" != "--execute" ]; then
+        echo "[미리보기] 아래 토픽과 Consumer Group을 삭제하고 토픽을 새로 만듦 (변경 안 함)"
+        echo "  토픽: $KAFKA_TOPIC / Consumer Group: $KAFKA_GROUP_ID"
+        echo ""
+        docker exec -e KAFKA_OPTS= kafka "$bin/kafka-consumer-groups.sh" \
+          --bootstrap-server "$server" --describe --group "$KAFKA_GROUP_ID" || true
+        echo ""
+        echo "적용하려면: shire kafka purge --execute"
+        exit 0
+      fi
+
+      # 1. Consumer Group 삭제 (있을 때만, 연결된 Consumer가 없어야 함)
+      if docker exec -e KAFKA_OPTS= kafka "$bin/kafka-consumer-groups.sh" \
+          --bootstrap-server "$server" --list | tr -d '\r' | grep -qx "$KAFKA_GROUP_ID"; then
+        local group_info
+        group_info=$(docker exec -e KAFKA_OPTS= kafka "$bin/kafka-consumer-groups.sh" \
+          --bootstrap-server "$server" --describe --group "$KAFKA_GROUP_ID" 2>&1)
+        if ! grep -q "has no active members" <<< "$group_info"; then
+          echo "$group_info"
+          echo ""
+          echo "중단: Consumer Group에 연결된 Consumer가 있음 (Rust 종료 후 다시 실행). 아무것도 삭제하지 않음"
+          exit 1
+        fi
+        docker exec -e KAFKA_OPTS= kafka "$bin/kafka-consumer-groups.sh" \
+          --bootstrap-server "$server" --delete --group "$KAFKA_GROUP_ID"
+      else
+        echo "Consumer Group 없음: $KAFKA_GROUP_ID (삭제 생략)"
+      fi
+
+      # 2. 토픽 삭제 (있을 때만)
+      if docker exec -e KAFKA_OPTS= kafka "$bin/kafka-topics.sh" \
+          --bootstrap-server "$server" --list | tr -d '\r' | grep -qx "$KAFKA_TOPIC"; then
+        docker exec -e KAFKA_OPTS= kafka "$bin/kafka-topics.sh" \
+          --bootstrap-server "$server" --delete --topic "$KAFKA_TOPIC"
+
+        # 3. 삭제 완료 대기 (최대 약 60초)
+        local i
+        for i in $(seq 1 20); do
+          if ! docker exec -e KAFKA_OPTS= kafka "$bin/kafka-topics.sh" \
+              --bootstrap-server "$server" --list | tr -d '\r' | grep -qx "$KAFKA_TOPIC"; then
+            break
+          fi
+          if [ "$i" -eq 20 ]; then
+            echo "중단: 토픽 삭제가 끝나지 않음. 잠시 후 shire kafka purge --execute 를 다시 실행"
+            exit 1
+          fi
+          sleep 1
+        done
+      else
+        echo "토픽 없음: $KAFKA_TOPIC (삭제 생략)"
+      fi
+
+      # 4. 토픽 재생성
+      docker exec -e KAFKA_OPTS= kafka "$bin/kafka-topics.sh" \
+        --bootstrap-server "$server" --create --topic "$KAFKA_TOPIC" \
+        --partitions 1 --replication-factor 1
+
+      # 5. 결과: partition별 끝 offset (모두 0이어야 함, 형식: 토픽:partition:offset)
+      echo ""
+      echo "완료. 현재 offset:"
+      docker exec -e KAFKA_OPTS= kafka "$bin/kafka-get-offsets.sh" \
+        --bootstrap-server "$server" --topic "$KAFKA_TOPIC"
+      ;;
     *)
-      echo "사용법: shire kafka [logs|inspect|exec|start|stop|restart|topics|consume <토픽명>]"
+      echo "사용법: shire kafka [logs|inspect|exec|start|stop|restart|topics|consume <토픽명>|groups|lag [그룹명]|reset <latest|earliest> [--execute]|purge [--execute]]"
       exit 1
       ;;
   esac
@@ -146,8 +249,81 @@ cmd_redpanda() {
       fi
       docker exec -it redpanda rpk topic consume "$2"
       ;;
+    groups)
+      # Consumer Group 목록
+      docker exec -it redpanda rpk group list
+      ;;
+    lag)
+      # Consumer Group의 partition별 commit offset, 토픽 끝 offset, LAG 확인
+      # 그룹명을 생략하면 docker/.env의 KAFKA_GROUP_ID 사용
+      docker exec -it redpanda rpk group describe "${2:-$KAFKA_GROUP_ID}"
+      ;;
+    reset)
+      # 테스트용 offset 초기화 (docker/.env의 KAFKA_GROUP_ID, KAFKA_TOPIC 대상)
+      #   latest  : commit 위치를 토픽 끝으로 옮김 -> 남아 있던 이벤트는 처리하지 않고 건너뜀 (LAG 0)
+      #   earliest: commit 위치를 토픽 맨 앞으로 옮김 -> 보관 중인 이벤트를 전부 다시 처리
+      # rpk group seek에는 미리보기 옵션이 없어서, --execute 없이 실행하면 현재 offset 상태만 보여주고 변경하지 않음
+      local to
+      case "$2" in
+        latest) to="end" ;;
+        earliest) to="start" ;;
+        *)
+          echo "사용법: shire redpanda reset <latest|earliest> [--execute]"
+          exit 1
+          ;;
+      esac
+      if [ "${3:-}" != "--execute" ]; then
+        docker exec -it redpanda rpk group describe "$KAFKA_GROUP_ID"
+        echo ""
+        echo "현재 상태만 출력됨 (변경 안 함). 적용하려면: shire redpanda reset $2 --execute"
+        exit 0
+      fi
+      docker exec -it redpanda rpk group seek "$KAFKA_GROUP_ID" --to "$to" --topics "$KAFKA_TOPIC"
+      ;;
+    purge)
+      # 테스트용 토픽 완전 초기화: 메시지를 모두 지우고 offset을 0부터 다시 시작 (docker/.env의 KAFKA_TOPIC, KAFKA_GROUP_ID 대상)
+      # 순서: Consumer Group 삭제 -> 토픽 삭제 -> 토픽 재생성
+      if [ "${2:-}" != "--execute" ]; then
+        echo "[미리보기] 아래 토픽과 Consumer Group을 삭제하고 토픽을 새로 만듦 (변경 안 함)"
+        echo "  토픽: $KAFKA_TOPIC / Consumer Group: $KAFKA_GROUP_ID"
+        echo ""
+        docker exec redpanda rpk group describe "$KAFKA_GROUP_ID" || true
+        echo ""
+        echo "적용하려면: shire redpanda purge --execute"
+        exit 0
+      fi
+
+      # 1. Consumer Group 삭제 (있을 때만, 연결된 Consumer가 없어야 함)
+      if docker exec redpanda rpk group list | awk -v g="$KAFKA_GROUP_ID" '$2 == g { found = 1 } END { exit !found }'; then
+        local members
+        members=$(docker exec redpanda rpk group describe "$KAFKA_GROUP_ID" | awk '$1 == "MEMBERS" { print $2 }')
+        if [ "$members" != "0" ]; then
+          docker exec redpanda rpk group describe "$KAFKA_GROUP_ID"
+          echo ""
+          echo "중단: Consumer Group에 연결된 Consumer가 있음 (Rust 종료 후 다시 실행). 아무것도 삭제하지 않음"
+          exit 1
+        fi
+        docker exec redpanda rpk group delete "$KAFKA_GROUP_ID"
+      else
+        echo "Consumer Group 없음: $KAFKA_GROUP_ID (삭제 생략)"
+      fi
+
+      # 2. 토픽 삭제 (있을 때만)
+      if docker exec redpanda rpk topic list | awk -v t="$KAFKA_TOPIC" '$1 == t { found = 1 } END { exit !found }'; then
+        docker exec redpanda rpk topic delete "$KAFKA_TOPIC"
+      else
+        echo "토픽 없음: $KAFKA_TOPIC (삭제 생략)"
+      fi
+
+      # 3. 토픽 재생성
+      docker exec redpanda rpk topic create "$KAFKA_TOPIC" --partitions 1 --replicas 1
+
+      echo ""
+      echo "완료. 현재 토픽 목록:"
+      docker exec redpanda rpk topic list
+      ;;
     *)
-      echo "사용법: shire redpanda [logs|inspect|exec|start|stop|restart|health|info|topics|consume <토픽명>]"
+      echo "사용법: shire redpanda [logs|inspect|exec|start|stop|restart|health|info|topics|consume <토픽명>|groups|lag [그룹명]|reset <latest|earliest> [--execute]|purge [--execute]]"
       exit 1
       ;;
   esac
@@ -378,12 +554,26 @@ print_help() {
   echo "Kafka 전용 명령:"
   echo "  shire kafka topics                    토픽 목록 확인"
   echo "  shire kafka consume <토픽명>           토픽 메시지 확인"
+  echo "  shire kafka groups                    Consumer Group 목록 확인"
+  echo "  shire kafka lag [그룹명]               Consumer Group offset / LAG 확인 (생략 시 docker/.env의 KAFKA_GROUP_ID)"
+  echo "  shire kafka reset <latest|earliest>   offset 초기화 미리보기"
+  echo "  shire kafka reset <...> --execute     offset 초기화 적용 (테스트 전용, Rust 종료 상태에서만 가능)"
+  echo "                                        latest: 남은 이벤트를 처리하지 않고 건너뜀 / earliest: 토픽 맨 앞부터 다시 처리"
+  echo "  shire kafka purge                     토픽 완전 초기화 미리보기"
+  echo "  shire kafka purge --execute           토픽·Consumer Group 삭제 후 토픽 재생성 → offset 0부터 시작"
   echo ""
   echo "RedPanda 전용 명령:"
   echo "  shire redpanda health                 클러스터 헬스체크"
   echo "  shire redpanda info                   클러스터/브로커 정보 확인"
   echo "  shire redpanda topics                 토픽 목록 확인"
   echo "  shire redpanda consume <토픽명>        토픽 메시지 확인"
+  echo "  shire redpanda groups                 Consumer Group 목록 확인"
+  echo "  shire redpanda lag [그룹명]            Consumer Group offset / LAG 확인 (생략 시 docker/.env의 KAFKA_GROUP_ID)"
+  echo "  shire redpanda reset <latest|earliest>  현재 offset 상태 출력"
+  echo "  shire redpanda reset <...> --execute  offset 초기화 적용 (테스트 전용, Rust 종료 상태에서 실행)"
+  echo "                                        latest: 남은 이벤트를 처리하지 않고 건너뜀 / earliest: 토픽 맨 앞부터 다시 처리"
+  echo "  shire redpanda purge                  토픽 완전 초기화 미리보기"
+  echo "  shire redpanda purge --execute        토픽·Consumer Group 삭제 후 토픽 재생성 → offset 0부터 시작"
   echo ""
   echo "OpenSearch 전용 명령:"
   echo "  shire opensearch ping                 상태 확인"
