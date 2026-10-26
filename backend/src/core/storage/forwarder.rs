@@ -83,6 +83,7 @@ pub const CHANNEL_CAPACITY: usize = 40_000; // 채널에 쌓일 수 있는 최�
 
 const BATCH_SIZE: usize = 20_000; // Batch 1개의 최대 로그 수
 const BATCH_MAX_WAIT: Duration = Duration::from_millis(200); // Batch를 완성하기까지 최대 대기 시간
+const BATCH_MAX_BYTES: usize = 32 * 1024 * 1024; // Batch 1개의 최대 크기(바이트): 로그 수가 BATCH_SIZE에 못 미쳐도 이 크기에 도달하면 Batch를 마감
 const MAX_IN_FLIGHT: usize = 8; // 동시에 저장 중일 수 있는 Batch 수
 
 pub struct StorageForwarder {
@@ -393,35 +394,39 @@ fn build_clickhouse_rows(records: &[&StorageRecord]) -> Vec<u8> {
     rows.into_bytes() // insert_json_rows가 Vec<u8>를 받아서 타입 변환 
 }
 
-// 채널에서 로그를 모아서 Batch 하나를 만듬
-// 채널에서 최대 BATCH_SIZE건을 모으고, 부족하면 BATCH_MAX_WAIT까지만 기다려 Batch 완성
-// 채널이 닫혔고 남은 로그도 없으면 None
+// OpenSearch Bulk 요청 본문에서 로그 1건이 차지하는 크기(바이트)
+fn bulk_bytes(record: &StorageRecord) -> usize {
+    record.doc.len() + record.index_name.len() + record.log_id.len()
+}
+
+// 채널에서 로그를 꺼내 Batch 하나를 만듬
+// 아래 3가지 중 하나가 되면 지금까지 모은 로그로 Batch를 마감
+//   1. 로그 수가 BATCH_SIZE에 도달
+//   2. 로그 크기 합이 BATCH_MAX_BYTES에 도달 (마지막에 넣은 로그 1건만큼 넘을 수 있음)
+//   3. 첫 로그를 받은 뒤 BATCH_MAX_WAIT가 지남 (로그가 적게 들어올 때 너무 오래 기다리지 않도록)
+// 채널이 닫혔으면 남은 로그만으로 마감하고, 남은 로그도 없으면 None
+//
+// 예: 일반 로그(약 1.3KB)만 들어오면 20,000건(약 27MB)에서 마감
+//     큰 로그(약 22KB)가 10% 섞이면 약 9,600건(32MB)에서 마감
 async fn collect_batch(rx: &mut mpsc::Receiver<StorageRecord>) -> Option<Vec<StorageRecord>> {
-    // 호출 1회당 batch(Vec) 1개를 새로 만들어 반환
-    // 아래 recv_many는 첫 호출과 while 반복에서 여러 번 실행되지만,
-    // 모두 이 batch 하나에 로그를 이어서 추가함 (&mut batch: batch를 빌려 뒤에 push)
-    // BATCH_SIZE 도달 / BATCH_MAX_WAIT 초과 / 채널 닫힘 중 하나가 되면 지금까지 모은 batch를 반환
-    let mut batch: Vec<StorageRecord> = Vec::with_capacity(BATCH_SIZE); // BATCH_SIZE건을 담을 공간을 미리 확보
+    // 첫 로그는 들어올 때까지 기다림 (채널이 닫혔고 남은 로그도 없으면 None 반환)
+    let first = rx.recv().await?;
+    let mut bytes = bulk_bytes(&first);
+    let mut batch = Vec::with_capacity(BATCH_SIZE); // BATCH_SIZE건을 담을 공간을 미리 확보
+    batch.push(first);
 
-    // recv_many: 채널에 있는 로그를 한 번에 최대 BATCH_SIZE건 만큼 꺼냄
-    // 채널이 비어 있으면 로그가 1건이라도 들어올 때까지 대기
-    // 0을 반환하면 채널이 닫혔다는 뜻
-    if rx.recv_many(&mut batch, BATCH_SIZE).await == 0 {
-        return None;
-    }
-
+    // BATCH_SIZE 도달 / BATCH_MAX_BYTES 도달 / BATCH_MAX_WAIT 초과 / 채널 닫힘 중 하나가 되면 지금까지 모은 batch를 반환
     let deadline = Instant::now() + BATCH_MAX_WAIT;
-    while batch.len() < BATCH_SIZE {
-        // BATCH_SIZE만큼 채워지지 않았다면
-        let remaining = BATCH_SIZE - batch.len(); // Batch에 더 담을 수 있는 로그 수 계산
-        // timeout_at: deadline까지만 recv_many를 기다림
-        // recv_many는 남은 자리(remaining)만큼만 로그를 batch 뒤에 이어서 추가하고
-        // 다음 반복에서 batch.len()을 확인해 아직 더 받을 수 있는 수를 계산
-        // batch에는 실제 StorageRecord와 doc 데이터가 들어가므로 로그가 크면 메모리 사용량도 커질 수 있음
-        match timeout_at(deadline, rx.recv_many(&mut batch, remaining)).await {
-            Ok(0) => break,  // 채널 닫힘: 지금까지 모은 만큼 사용
-            Ok(_) => {}      // 로그 더 받음, 계속
-            Err(_) => break, // 시간 초과: 지금까지 모은 만큼 사용
+    while batch.len() < BATCH_SIZE && bytes < BATCH_MAX_BYTES {
+        // 로그를 1건씩 꺼내며 크기를 더함 (여러 건을 한 번에 꺼내면 크기 상한을 크게 넘을 수 있음)
+        // timeout_at: deadline이 지나면 더 기다리지 않고 Err 반환
+        match timeout_at(deadline, rx.recv()).await {
+            Ok(Some(record)) => {
+                bytes += bulk_bytes(&record);
+                batch.push(record);
+            }
+            Ok(None) => break, // 채널 닫힘: 지금까지 모은 만큼 사용
+            Err(_) => break,   // 시간 초과: 지금까지 모은 만큼 사용
         }
     }
 
@@ -523,5 +528,24 @@ mod tests {
             assert!(value["payload"].is_object());
         }
         assert_eq!(rows.capacity(), rows.len()); // 미리 계산한 크기가 실제 크기와 같음
+    }
+
+    // 시나리오 7: 로그가 커서 BATCH_SIZE건이 안 되어도 BATCH_MAX_BYTES에 도달하면 Batch를 마감한다
+    #[tokio::test]
+    async fn collect_batch_splits_at_max_bytes() {
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+
+        // 문서 1건을 상한의 1/4 크기로 만들어 6건 전송 -> 4건째에 상한 도달
+        let big_doc = "x".repeat(BATCH_MAX_BYTES / 4);
+        for i in 0..6 {
+            let mut r = record(i);
+            r.doc = big_doc.clone();
+            tx.send(r).await.unwrap();
+        }
+        drop(tx);
+
+        assert_eq!(collect_batch(&mut rx).await.unwrap().len(), 4);
+        assert_eq!(collect_batch(&mut rx).await.unwrap().len(), 2);
+        assert!(collect_batch(&mut rx).await.is_none());
     }
 }
