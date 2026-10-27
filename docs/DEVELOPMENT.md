@@ -645,7 +645,7 @@ cd scripts
 Vector로 테스트 이벤트를 대량 전송해 Shire Guard 파이프라인 전체(수집 → Enrichment → 플레이북 판정 → 저장 → 실패 보관)를 검증하는 테스트 도구 (옵션과 동작 설명은 `--help` 참고)
 
 ```bash
-# Vector · Backend · 저장소가 실행 중이어야 함 (실행 전 서비스 상태를 확인해서 출력)
+# Vector · Backend · 저장소가 실행 중이어야 함 (-v 옵션을 주면 실행 전 서비스 상태를 확인해서 출력)
 cd scripts
 
 # 빌드 (코드 변경 시): 결과물 loadgen/target/release/loadgen.exe를 scripts로 복사
@@ -667,7 +667,7 @@ cd scripts
 ./loadgen.exe check
 ```
 
-- 실행이 끝나면 이번 실행의 기대값을 출력하며, `./loadgen.exe check`의 확인 결과와 비교
+- 기본 출력은 회차마다 결과 1줄이며, `-v` 옵션을 주면 실행 후 이번 실행의 기대값까지 출력 (`./loadgen.exe check`의 확인 결과와 비교)
 - Backend를 끈 상태로 전송하면 이벤트가 Kafka에 쌓이고, Backend를 켜서 쌓인 이벤트의 처리 속도를 측정할 수 있음
 
 

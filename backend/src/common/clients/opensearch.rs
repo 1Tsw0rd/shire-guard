@@ -10,9 +10,12 @@ use crate::common::error::AppError;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 // OpenSearch 서버에 연결하는 데 걸리는 제한 시간
+// BULK_TIMEOUT(5분)은 연결 단계에도 적용되므로, 연결이 응답 없이 멈추는 경우(네트워크 단절 등) 5초 만에 재시도로 넘어가게 함
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-// Bulk 요청 1번의 응답 제한 시간 (부하 테스트에서 가장 오래 걸린 Bulk가 약 2분이었으므로 여유를 두어 5분)
+// Bulk 요청 1번의 응답 제한 시간
+// OpenSearch는 클라이언트가 연결을 끊어도 받은 Bulk를 끝까지 처리하므로, 짧게 잡으면 처리 중인 Batch를 다시 보내 중복 요청이 쌓임
+// (30초일 때 같은 Batch가 최대 4중으로 쌓여 indexing pressure 한도에 근접함, 가장 오래 걸린 Bulk 약 2분 기준으로 여유를 두어 5분)
 const BULK_TIMEOUT: Duration = Duration::from_secs(300);
 
 // Bulk 응답에서 필요한 필드만 받도록 요청

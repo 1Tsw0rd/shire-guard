@@ -37,13 +37,15 @@ Kafka commit
 400     -> 거절 (문서 자체 문제, 다시 보내도 같은 결과)
 429/5xx -> 그 문서만 재시도
 그 외   -> 설정·환경 문제로 보고 에러 로그 후 재시도
-요청 자체 실패 -> 남은 문서 전체 재시도
+요청 자체 실패 (연결 실패, 응답 5분 초과 등) -> 남은 문서 전체 재시도
     ↓
 2. ClickHouse INSERT (OpenSearch에 저장된 로그만, 실패하면 전체 재시도)
     ↓
 3. PostgreSQL storage_failures (거절된 로그가 있을 때만, 실패하면 재시도)
     ↓
 4. 지표 갱신
+    ↓
+5. Kafka commit 위치 갱신 (Batch의 모든 로그가 저장 또는 storage_failures 기록을 마친 뒤)
 
 - 결과: 모든 로그는 "OpenSearch와 ClickHouse 둘 다 저장" 또는 "둘 다 없이 storage_failures에 기록" 중 하나
 - 재시도는 성공할 때까지 계속함 (버리면 유실), 대기 시간은 100ms부터 2배씩 최대 30초
@@ -83,7 +85,10 @@ pub const CHANNEL_CAPACITY: usize = 40_000; // 채널에 쌓일 수 있는 최�
 
 const BATCH_SIZE: usize = 20_000; // Batch 1개의 최대 로그 수
 const BATCH_MAX_WAIT: Duration = Duration::from_millis(200); // Batch를 완성하기까지 최대 대기 시간
-const BATCH_MAX_BYTES: usize = 32 * 1024 * 1024; // Batch 1개의 최대 크기(바이트): 로그 수가 BATCH_SIZE에 못 미쳐도 이 크기에 도달하면 Batch를 마감
+// Batch 1개의 최대 크기(바이트): 로그 수가 BATCH_SIZE에 못 미쳐도 이 크기에 도달하면 Batch를 마감
+// OpenSearch 요청 크기 제한(http.max_content_length 기본 100MB)을 넘으면 413으로 거부되고 Batch 전체가 무한 재시도되므로 여유 있게 32MB로 제한
+// (일반 로그 약 1.3KB × 20,000건 = 약 27MB라 평소에는 건수 기준으로 마감됨)
+const BATCH_MAX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_IN_FLIGHT: usize = 8; // 동시에 저장 중일 수 있는 Batch 수
 
 pub struct StorageForwarder {
@@ -189,8 +194,8 @@ impl StorageForwarder {
             let docs: Vec<BulkDoc> = pending
                 .iter()
                 .map(|&record| BulkDoc {
-                    index: &record.index_name,     // String -> &String
-                    id: &record.log_id,            // String -> &String
+                    index: &record.index_name,     // String -> &str
+                    id: &record.log_id,            // String -> &str
                     source: record.doc.as_bytes(), // String -> &[u8] (as_bytes()가 이미 참조 반환)
                 })
                 .collect();
@@ -391,7 +396,7 @@ fn build_clickhouse_rows(records: &[&StorageRecord]) -> Vec<u8> {
         rows.push_str(&record.doc);
         rows.push_str(SUFFIX);
     }
-    rows.into_bytes() // insert_json_rows가 Vec<u8>를 받아서 타입 변환 
+    rows.into_bytes() // insert_json_rows가 Vec<u8>를 받아서 타입 변환
 }
 
 // OpenSearch Bulk 요청 본문에서 로그 1건이 차지하는 크기(바이트)

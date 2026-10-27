@@ -911,7 +911,7 @@ flowchart LR
 ```mermaid
 flowchart TD
     REC["StorageRecord"] --> CH1["채널 (최대 4만 건)"]
-    CH1 --> BATCH["Batch<br/>2만 건 또는 200ms · 동시 8개"]
+    CH1 --> BATCH["Batch<br/>2만 건 · 32MB · 200ms 중 먼저 도달<br/>동시 8개"]
     BATCH --> OS{"OpenSearch Bulk"}
     OS -->|"200 / 201"| CK["ClickHouse INSERT<br/>(실패 시 전체 재시도)"]
     OS -->|"400 (문서 문제)"| PG["PostgreSQL<br/>storage_failures"]
@@ -1018,6 +1018,11 @@ sequenceDiagram
 | └ OpenSearch | 약 11.2만/s | 빈 인덱스, 힙 8GB, Rust 서버 동시 실행 중 측정 |
 | └ ClickHouse | 약 21만~26만/s | |
 | **전체 (Kafka 소비 → 저장 완료)** | **약 6.6만~7.1만/s** | Kafka에 쌓아둔 100만 건 처리 |
+
+<!-- 단독 측정 (Rust Backend 종료, dbbench), 2026-10-27
+./dbbench.exe os 1000000 --batch 20000 --concurrency 8   # 빈 인덱스, 147,250 docs/s
+./dbbench.exe ch 1000000 --batch 20000 --concurrency 8   # 325,155 docs/s
+-->
 
 ### 측정 결과 및 해석
 
