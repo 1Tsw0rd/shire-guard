@@ -1,5 +1,9 @@
 # API Documentation
 
+**한국어** | [English](API.en.md)
+
+**문서 링크** | [README](../README.md) | [개발 가이드](DEVELOPMENT.md) | [데모 문서](DEMO.md)
+
 Shire Guard의 API를 한눈에 확인하고, Request·Response 상세 내용으로 이동할 수 있도록 정리한 문서
 
 ## Base URL

@@ -1,5 +1,9 @@
 # Development Guide
 
+**한국어** | [English](DEVELOPMENT.en.md)
+
+**문서 링크** | [README](../README.md)| [API 문서](API.md) | [데모 문서](DEMO.md)
+
 Shire Guard를 로컬에서 실행하고, 의존성을 관리하고, 테스트하는 방법을 정리합니다.
 
 > **명령어 실행 위치**

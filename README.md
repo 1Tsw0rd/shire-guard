@@ -1,5 +1,8 @@
-
 # Shire Guard
+
+**한국어** | [English](README.en.md)
+
+**문서 링크** | [개발 가이드](docs/DEVELOPMENT.md) | [API 문서](docs/API.md) | [데모 문서](docs/DEMO.md)
 
 ```text
 ┌─────────────────────────────────────────────────────┐
@@ -173,7 +176,11 @@ flowchart TB
 
 ---
 
-<!-- TODO 시연 데모영상 추가 예정 -->
+## 🚀 Demo — 직접 확인하기
+
+> **이벤트 예시, 적용 플레이북, 예상 결과, 시연 영상을 통해 Shire Guard의 동작을 확인할 수 있습니다.**
+
+### 🎬 [데모 보기 · DEMO.md](docs/DEMO.md)
 
 ---
 
