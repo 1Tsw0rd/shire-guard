@@ -246,7 +246,10 @@ mode_kafka() {
 
 mode_db() {
   header "[4] DB별 평균 응답 시간" \
-    "주기: ${INTERVAL_DB}초 | 구간: 직전 ${INTERVAL_DB}초에 끝난 요청 | 누적: Rust 기동 이후 | 종료: Ctrl+C"
+    "주기: ${INTERVAL_DB}초 | 종료: Ctrl+C" \
+    "---" \
+    "구간 : 최근 ${INTERVAL_DB}초 동안 끝난 저장 요청의 1번당 평균 시간" \
+    "누적 : Rust 기동 후 끝난 전체 저장 요청의 1번당 평균 시간"
 
   local has_prev=0 p_os_s=0 p_os_c=0 p_ch_s=0 p_ch_c=0
   local first=1
