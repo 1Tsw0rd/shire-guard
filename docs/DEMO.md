@@ -102,7 +102,7 @@ cd docker
 docker compose down
 
 # grafana/data는 지우지 않음 (데이터소스·대시보드 유지)
-rm -rf kafka/data opensearch/data clickhouse/data postgres/data vector/data loki/data postgres/data
+rm -rf kafka/data opensearch/data clickhouse/data postgres/data vector/data loki/data
 
 docker compose up -d --scale redpanda=0 --scale dragonfly=0
 -->
