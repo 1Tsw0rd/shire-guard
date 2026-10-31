@@ -95,6 +95,8 @@
 ## 시나리오 별 테스트
 ![데모 시나리오](assets/demo-scenarios.png)
 
+> 매 테스트 전 docker 서비스를 데이터와 함께 초기화(`docker compose down`) 후 새로 시작하여 진행하였습니다.
+
 ### 1. Backlog 처리 성능: Rust 서버가 멈춘 동안 쌓인 100만 건 일괄 처리
 
 ![시나리오 1 개요](assets/scenario-1-overview.png)
