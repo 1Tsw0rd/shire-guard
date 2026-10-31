@@ -48,7 +48,7 @@
   - [3. Enrichment (위협 정보 조회)](#3-enrichment-위협-정보-조회)
   - [4. Playbook 자동 판정](#4-playbook-자동-판정)
   - [5. 로그 저장 (릴레이 배치 저장)](#5-로그-저장-릴레이-배치-저장)
-  - [6. Grafana 대시보드](#6-grafana-대시보드)
+  - [6. (개선 예정) Grafana 대시보드](#6-개선-예정-grafana-대시보드)
   - [7. (구현 예정) 이벤트 · 플레이북 로그 조회](#7-구현-예정-이벤트--플레이북-로그-조회)
   - [8. (구현 예정) 보고서 생성](#8-구현-예정-보고서-생성)
 - [성능](#성능)
@@ -230,7 +230,7 @@ flowchart TB
 
 ---
 
-<!-- TODO 대시보드 및 알림 스크린샷 추가 예정 -->
+> 대시보드 화면은 [주요 기능 > 6. (개선 예정) Grafana 대시보드](#6-개선-예정-grafana-대시보드)에서 확인할 수 있습니다.
 
 ---
 
@@ -985,9 +985,31 @@ sequenceDiagram
 
 ---
 
-### 6. Grafana 대시보드
+### 6. (개선 예정) Grafana 대시보드
 
 - Prometheus로 수집한 각 서비스의 Metric과 Loki의 알림 이력을 Grafana 대시보드로 표시
+
+<details>
+<summary><b>대시보드 화면 보기 (초기 버전)</b></summary>
+
+> [!NOTE]
+> 초기 버전에서 캡처한 화면입니다. Vector가 OpenSearch / ClickHouse에 직접 저장하던 당시의 화면이 포함되어 있으며, 현재 저장 구조(Rust → OpenSearch / ClickHouse 직접 저장)에 맞춘 최신 화면은 추후 진행할 예정입니다. (FE 코드로 대체 여부 고려 중)
+
+#### Axum 서버 활성화
+
+![Pipeline Health](docs/assets/grafana-axum-up-1-pipeline.png)
+![Vector Sink Reliability & Buffering](docs/assets/grafana-axum-up-2-vector-sink.png)
+![Infrastructure](docs/assets/grafana-axum-up-3-infrastructure.png)
+![Cluster Detail](docs/assets/grafana-axum-up-4-cluster.png)
+
+#### Axum 서버 비활성화
+
+![Pipeline Health](docs/assets/grafana-axum-down-1-pipeline.png)
+![Vector Sink Reliability & Buffering](docs/assets/grafana-axum-down-2-vector-sink.png)
+![Infrastructure](docs/assets/grafana-axum-down-3-infrastructure.png)
+![Cluster Detail](docs/assets/grafana-axum-down-4-cluster.png)
+
+</details>
 
 ---
 
