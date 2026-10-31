@@ -95,7 +95,17 @@
 ## 시나리오 별 테스트
 ![데모 시나리오](assets/demo-scenarios.png)
 
-> 매 테스트 전 docker 서비스를 데이터와 함께 초기화(`docker compose down`) 후 새로 시작하여 진행하였습니다.
+> 매 테스트 전 docker 서비스를 종료하고 데이터를 삭제한 뒤 다시 시작하여 진행하였습니다.
+
+<!-- 
+cd docker
+docker compose down
+
+# grafana/data는 지우지 않음 (데이터소스·대시보드 유지)
+rm -rf kafka/data opensearch/data clickhouse/data postgres/data vector/data loki/data postgres/data
+
+docker compose up -d --scale redpanda=0 --scale dragonfly=0
+-->
 
 ### 1. Backlog 처리 성능: Rust 서버가 멈춘 동안 쌓인 100만 건 일괄 처리
 
