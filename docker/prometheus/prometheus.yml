@@ -19,7 +19,7 @@ scrape_configs:
   - job_name: "redpanda"
     static_configs:
       - targets:
-          - "redpanda:9644"  # Redpanda 컨테이너 내부 메트릭 포트
+          - "redpanda:9644"  # RedPanda 컨테이너 내부 메트릭 포트
     metrics_path: "/public_metrics"
 
   - job_name: "kafka"

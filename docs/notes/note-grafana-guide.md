@@ -1,3 +1,7 @@
+> **[참고 사항]**
+>
+> 대시보드 개편 전(2026-09) 작성한 문서로, 현재 대시보드 · Alert 구성과 일부 다를 수 있음
+
 # Grafana 대시보드 & Alert 읽는 법
 
 > Shire Guard의 Grafana Dashboard와 Alert를 읽을 때 반드시 알아둘 참고 메모.

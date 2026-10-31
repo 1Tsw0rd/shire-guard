@@ -1,3 +1,7 @@
+> **[참고 사항]**
+>
+> 개발 당시 작성한 설계 문서이며, 예시의 `playbook_id`와 대응 설정 등은 설명용이므로 [`docker/postgres/init/002_seed.sql`](../../docker/postgres/init/002_seed.sql)에서 적용된 플레이북과 다를 수 있음
+
 # 플레이북 설계
 
 > **Playbook Engine**
@@ -9,6 +13,9 @@ RAW EVENT
    ▼
  Vector
    │
+   ▼ 
+ Kafka / RedPanda
+   │
    ▼
  Enrichment
    │
@@ -16,11 +23,11 @@ RAW EVENT
 ┌──────────────────────────────┐
 │       Playbook Engine        │
 │                              │
-│  ① 활성 Playbook 병렬 평가   │
-│  ② Condition AND/OR 평가     │
+│  ① 활성 Playbook 병렬 평가     │
+│  ② Condition AND/OR 평가      │
 │  ③ Response / AI Response    │
-│  ④ Action 결과 집계          │
-│  ⑤ 과반수(> 50%) 결정        │
+│  ④ Action 결과 집계           │
+│  ⑤ 과반수(> 50%) 결정         │
 └──────────────────────────────┘
    │
    ├── Redis / Dragonfly
@@ -212,16 +219,21 @@ CREATE TABLE IF NOT EXISTS shire.event_logs (
     log_id   String,                                  -- 로그 ID: sha256(event_id + ingested_at), 중복 판단 기준 (OpenSearch _id와 같은 값)
     payload  JSON(                                    -- 원본 + enrichment + playbook_result 전체 (OpenSearch 문서와 동일)
         -- 자주 조회되거나 파티션, 정렬 키에 사용하는 JSON 경로에 타입 힌트를 지정
-        -- 타입 힌트가 지정된 컬럼은 조회 시 전체 JSON을 다시 파싱하지 않고 해당 subcolumn을 직접 읽어 조회 성능을 높일 수 있음
-        ingested_at              DateTime64(9, 'UTC'),    -- 수집 시각 (수신 Vector가 기록, 파티션·정렬 키에 사용)
+        -- 타입 힌트가 지정된 경로는 타입이 고정된 subcolumn으로 저장되어 전용 컬럼과 같은 성능으로 조회됨
+        -- (힌트가 없는 경로는 타입이 정해지지 않은 Dynamic으로 저장되어 상대적으로 느림)
+        ingested_at              DateTime64(9, 'UTC'),    -- 수집 시각 (수신 Vector가 기록, 파티션/정렬 키에 사용), 예: 2026-10-07T00:10:01.123456789Z
         event_id                 String,                  -- 이벤트 ID (같은 이벤트의 로그가 여러 건일 수 있음)
         event_type               LowCardinality(String),  -- 이벤트 종류 (file_download 등)
         `playbook_result.action` LowCardinality(Nullable(String))   -- 플레이북 최종 결정: DENY / DETECT / HOLD (결정 없으면 NULL)
     )
 ) ENGINE = ReplacingMergeTree                         -- 같은 log_id는 병합 시 하나만 남김 (정확한 조회는 FINAL)
 PARTITION BY toYYYYMM(payload.ingested_at)            -- 월 단위 파티션 (OpenSearch 인덱스와 같은 수집 시각 기준)
-ORDER BY (payload.ingested_at, log_id);               -- 정렬 키 = 중복 판단 기준, ingested_at이 앞이라 시간 범위 조회에 유리
-
+ORDER BY (payload.ingested_at, log_id)                -- 정렬 키 = 중복 판단 기준, ingested_at이 앞이라 시간 범위 조회에 유리
+SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part: Data Part를 Wide 형식으로 저장하기 위한 최소 크기 (바이트)
+                                                      -- 기본값 10 MiB에서 256 MiB로 변경하여 더 작은 Data Part가 Compact 형식으로 저장되도록 설정
+                                                      -- Wide는 컬럼마다 파일을 나누어 저장하고, Compact는 여러 컬럼의 데이터를 하나의 data.bin 파일에 모아 저장
+                                                      -- payload JSON 내부에 경로가 많으면 Wide는 경로별로 데이터 파일을 생성하므로 파일 수가 많아짐
+                                                      -- 작은 Data Part를 Compact로 저장해 여러 경로의 데이터를 적은 수의 파일에 모으고, 파일 생성 부담을 줄여 대량 INSERT 성능을 개선
 ```
 
 
@@ -258,7 +270,7 @@ ORDER BY (payload.ingested_at, log_id);               -- 정렬 키 = 중복 판
     - ClickHouse: log_id 컬럼이 ReplacingMergeTree가 병합 시 정리됨, 정확한 조회는 `FINAL` 사용
       - ClickHouse 백그라운드 스케쥴링으로 중복된 row는 최신 row 말고 제거 진행됨
         - 관련 쿼리) OPTIMIZE TABLE shire.event_logs FINAL; -- 즉시 병합
-        - 관련 쿼리) SETTINGS min_age_to_force_merge_seconds = 3600   -- 1시간 지난 파트는 강제로 병합
+        - 관련 쿼리) SETTINGS min_age_to_force_merge_seconds = 3600  -- 1시간 지난 파트는 강제로 병합
 
 - 시각 필드
   - `timestamp`: 이벤트 발생 시각 (발신 측 원본 값)
@@ -324,7 +336,7 @@ ORDER BY (payload.ingested_at, log_id);               -- 정렬 키 = 중복 판
 
 **참고사항**
 - 포트폴리오이므로 모든 필드 종류를 구현하지 않음
-- 예: 배열 value 처리, 대소문자 구분 등은 제외
+- 예: 배열 value 처리, 대소문자 무시 등은 제외
 
 ### 2.2 대응 노드
 

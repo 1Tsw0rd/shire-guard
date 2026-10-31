@@ -7,11 +7,16 @@
 - Consumer가 처리할 수 없는 메시지(빈 메시지, 역직렬화 실패 등)의 log_id = kafka-{topic}-{partition}-{offset}
   (event_id와 ingested_at을 얻을 수 없으므로 Kafka 위치로 생성, 재처리돼도 같은 값이라 한 건만 유지)
 
+PostgreSQL 저장 방식: 여러 건을 UNNEST로 묶어 INSERT 1번에 저장
+- OpenSearch 거부 로그: Bulk 응답 1번에서 거부된 문서를 한 번에 저장 (forwarder.rs)
+- Consumer 실패 로그: 실패 로그 저장 Task가 채널에서 collect_failures()로 최대 FAILURE_BATCH_SIZE만큼 묶어 저장 (kafka.rs)
+
 payload는 받은 바이트 그대로 BYTEA로 저장 (깨진 JSON, NUL 바이트, 잘못된 UTF-8도 거부되지 않음)
 조회: SELECT log_id, reason, bytea_to_text_safe(payload) FROM storage_failures; (함수는 docker/postgres/init/001_init.sql)
 */
 
 use sqlx::PgPool;
+use tokio::sync::mpsc;
 
 use crate::common::metrics::Metrics;
 use crate::core::storage::retry::RetryDelay;
@@ -23,6 +28,34 @@ pub struct FailedLog<'a> {
     pub partition: i32,  // 원본 이벤트의 Kafka partition 번호
     pub offset: i64,     // 원본 이벤트의 Kafka offset
 }
+
+// PostgreSQL에 저장할 Consumer 처리 실패 1건
+// 채널로 넘기기 위해 데이터를 소유하는 형태이며, 데이터를 저장할 때는 FailedLog로 빌려서 사용
+pub struct OwnedFailedLog {
+    pub log_id: String,
+    pub reason: String,
+    pub payload: Vec<u8>,
+    pub partition: i32,
+    pub offset: i64,
+}
+
+impl OwnedFailedLog {
+    pub fn as_failed_log(&self) -> FailedLog<'_> {
+        // 저장 함수에서 사용하는 FailedLog 형태로 변환
+        // 기존 문자열과 원본 데이터는 복사하지 않고 참조해서 사용
+        FailedLog {
+            log_id: &self.log_id,
+            reason: &self.reason,
+            payload: &self.payload,
+            partition: self.partition,
+            offset: self.offset,
+        }
+    }
+}
+
+pub const FAILURE_CHANNEL_CAPACITY: usize = 10_000; // 채널에 쌓일 수 있는 최대 실패 건수
+const FAILURE_BATCH_SIZE: usize = 6_000; // INSERT 1번에 담을 최대 건수 (1000~10000 측정 결과 6000이 약 25K/s로 가장 빠름, 그 이상은 건당 비용이 늘어 느려짐)
+const FAILURE_BATCH_MAX_BYTES: usize = 8 * 1024 * 1024; // INSERT 1번에 담을 최대 원문 크기 (최대 크기: 8 MiB)
 
 /*
 저장하지 못한 로그들을 Bulk insert로 저장
@@ -100,6 +133,33 @@ pub async fn save_failures_until_ok(pool: &PgPool, metrics: &Metrics, failures: 
     }
 }
 
+// 채널에 대기 중인 실패 로그를 꺼내 PostgreSQL에 저장할 Batch 하나를 만듬
+// 첫 건은 올 때까지 기다리고, 그 뒤로는 이미 쌓여 있는 것만 꺼내므로 실패 로그가 드물면 1건씩 바로 저장되고
+// 여러 기록이 한꺼번에 쌓이면 Batch로 묶어서 저장하여 PostgreSQL 호출 횟수를 줄임
+// 채널이 닫혔고 남은 것도 없으면 None
+pub async fn collect_failures(
+    rx: &mut mpsc::Receiver<OwnedFailedLog>,
+) -> Option<Vec<OwnedFailedLog>> {
+    let first = rx.recv().await?;
+    let mut bytes = first.payload.len();
+    let mut batch = vec![first];
+
+    // 수집 종료 조건1: Batch 건수가 FAILURE_BATCH_SIZE에 도달
+    // 수집 종료 조건2: 원본 데이터(payload)의 크기 합이 FAILURE_BATCH_MAX_BYTES에 도달하거나 초과
+    while batch.len() < FAILURE_BATCH_SIZE && bytes < FAILURE_BATCH_MAX_BYTES {
+        match rx.try_recv() {
+            Ok(failure) => {
+                bytes += failure.payload.len();
+                batch.push(failure);
+            }
+            Err(_) => break, // 지금 쌓인 게 없으면 바로 저장
+        }
+    }
+
+    Some(batch)
+}
+
+// cargo test --lib storage::failures
 // cargo test --lib storage::failures -- --ignored
 #[cfg(test)]
 mod tests {
@@ -144,6 +204,16 @@ mod tests {
             payload: payload.as_bytes(),
             partition: 0,
             offset: 100,
+        }
+    }
+
+    fn owned(offset: i64, payload_len: usize) -> OwnedFailedLog {
+        OwnedFailedLog {
+            log_id: format!("kafka-test-0-{offset}"),
+            reason: "test".to_string(),
+            payload: vec![b'x'; payload_len],
+            partition: 0,
+            offset,
         }
     }
 
@@ -312,5 +382,94 @@ mod tests {
             texts,
             [r#"{"event_id":"#, r"a\000b", r"a\377b", "", "송장.exe"]
         );
+    }
+
+    /*
+    시나리오 5: 실패 기록이 Batch 최대 건수를 초과하면 여러 Batch로 나누어 수집한다.
+
+    준비:
+    - FAILURE_BATCH_SIZE + 5건의 실패 기록을 채널에 전송
+
+    수집 결과:
+    - 첫 번째 Batch: FAILURE_BATCH_SIZE건
+    - 두 번째 Batch: 나머지 5건
+    */
+    #[tokio::test]
+    async fn collect_failures_splits_at_batch_size() {
+        let (tx, mut rx) = mpsc::channel(FAILURE_CHANNEL_CAPACITY);
+        for i in 0..(FAILURE_BATCH_SIZE as i64 + 5) {
+            tx.send(owned(i, 10)).await.unwrap();
+        }
+
+        assert_eq!(
+            collect_failures(&mut rx).await.unwrap().len(),
+            FAILURE_BATCH_SIZE
+        );
+        assert_eq!(collect_failures(&mut rx).await.unwrap().len(), 5);
+    }
+
+    /*
+    시나리오 6: 원본 데이터 크기의 합이 Batch 크기 제한에 도달하면 수집을 종료한다.
+
+    준비:
+    - 실패 기록 6건을 채널에 전송
+    - 각 기록의 원본 데이터 크기는 FAILURE_BATCH_MAX_BYTES의 1/4
+
+    수집 결과:
+    - 첫 번째 Batch: 4건 (원본 데이터 합계 8MiB)
+    - 두 번째 Batch: 나머지 2건 (원본 데이터 합계 4MiB)
+
+    확인:
+    - 건수 제한에 도달하지 않아도 원본 데이터 크기를 기준으로 Batch를 나눈다.
+    */
+    #[tokio::test]
+    async fn collect_failures_splits_at_max_bytes() {
+        let (tx, mut rx) = mpsc::channel(FAILURE_CHANNEL_CAPACITY);
+        for i in 0..6 {
+            tx.send(owned(i, FAILURE_BATCH_MAX_BYTES / 4))
+                .await
+                .unwrap();
+        }
+        drop(tx);
+
+        assert_eq!(collect_failures(&mut rx).await.unwrap().len(), 4);
+        assert_eq!(collect_failures(&mut rx).await.unwrap().len(), 2);
+        assert!(collect_failures(&mut rx).await.is_none());
+    }
+
+    /*
+    시나리오 7: 채널에 이미 쌓인 실패 기록은 추가 대기 없이 수집한다.
+
+    준비:
+    - 채널이 열린 상태에서 실패 기록 2건을 미리 전송
+
+    수집 결과:
+    - collect_failures()가 대기 중인 2건을 Batch로 반환
+    - 추가 기록이 들어올 때까지 기다리지 않고 반환하는지 확인
+    */
+    #[tokio::test]
+    async fn collect_failures_returns_available_without_waiting() {
+        let (tx, mut rx) = mpsc::channel(FAILURE_CHANNEL_CAPACITY);
+        tx.send(owned(1, 10)).await.unwrap();
+        tx.send(owned(2, 10)).await.unwrap();
+
+        let batch = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            collect_failures(&mut rx),
+        )
+        .await
+        .expect("대기 없이 반환되어야 함")
+        .unwrap();
+        assert_eq!(batch.len(), 2);
+        drop(tx);
+    }
+
+    // 시나리오 8: 채널이 닫혔고 남은 실패도 없으면 None
+    #[tokio::test]
+    async fn collect_failures_returns_none_when_channel_closed() {
+        let (tx, mut rx) = mpsc::channel::<OwnedFailedLog>(FAILURE_CHANNEL_CAPACITY);
+        drop(tx);
+
+        assert!(collect_failures(&mut rx).await.is_none());
     }
 }

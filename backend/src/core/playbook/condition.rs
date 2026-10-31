@@ -184,7 +184,7 @@ fn eval_condition(condition: &Condition, event: &Value) -> bool {
 
         Op::Eq => compare_eq(event_field_value, condition_value).unwrap_or(false),
 
-        // 값이 서로 값으면 Ne는 false가 나와야 함
+        // 값이 서로 같으면 Ne는 false가 나와야 함
         // compare_eq에 같은 값이 비교가 되면 true가 반환되므로 map에서 반환된 값을 반전시킴
         Op::Ne => compare_eq(event_field_value, condition_value)
             .map(|eq| !eq)
@@ -313,7 +313,7 @@ fn get_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     }
 }
 
-// when 문자열 렌더링 (palybook_result.playbooks[].when에 들어갈 값)
+// when 문자열 렌더링 (playbook_result.playbooks[].when에 들어갈 값)
 // eval()과 반대 방향: Expr을 사람이 읽는 문자열로 바꿈
 // 재파싱 용도가 아니라 과거 기록/조회용이라 값에 따옴표를 씌우지 않음
 pub fn render_when(expr: &Expr) -> String {

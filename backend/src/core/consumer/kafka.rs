@@ -19,7 +19,7 @@
 //      ↓
 // RawEvent 역직렬화
 //      ├── 성공 -> Enrichment -> Playbook -> 저장 Task(forwarder.rs)로 전달
-//      └── 실패 -> 원문과 사유를 PostgreSQL storage_failures에 보관
+//      └── 실패 -> 실패 로그 저장 Task로 전달 -> Batch로 묶어 실패 로그들의 원문과 사유를 PostgreSQL storage_failures에 보관
 //
 // Kafka offset commit:
 // 메시지를 받으면 offset 추적기(offset.rs)에 등록하고, OpenSearch와 ClickHouse 저장이 끝난 offset까지만 commit 위치로 저장
@@ -51,7 +51,9 @@ use crate::core::consumer::event::RawEvent;
 use crate::core::consumer::offset::OffsetTracker;
 use crate::core::enrichment::service::EnrichmentService;
 use crate::core::playbook::engine::PlaybookEngine;
-use crate::core::storage::failures::{FailedLog, save_failures_until_ok};
+use crate::core::storage::failures::{
+    FAILURE_CHANNEL_CAPACITY, FailedLog, OwnedFailedLog, collect_failures, save_failures_until_ok,
+};
 use crate::core::storage::record::StorageRecord;
 
 use tokio::sync::{Semaphore, mpsc};
@@ -262,7 +264,8 @@ impl OffsetCommitter {
 
 /*
 Consumer가 처리할 수 없는 메시지 보관: 빈 메시지, RawEvent 역직렬화 실패, 저장 로그 직렬화 실패
-원문(payload)과 사유(reason)를 PostgreSQL storage_failures에 저장한 뒤 offset 완료 처리
+원문(payload)과 사유(reason)를 실패 로그 저장 Task로 넘기면
+Task가 모아서 PostgreSQL storage_failures에 한 번에 저장한 뒤 offset 완료 처리
 (저장이 끝나야 commit되므로 버려지는 메시지 없음, 담당자는 storage_failures에서 원인 확인)
 
 log_id: kafka-{topic}-{partition}-{offset}
@@ -270,34 +273,53 @@ log_id: kafka-{topic}-{partition}-{offset}
 - 재처리로 같은 메시지가 다시 실패해도 같은 값이라 한 건만 유지
 */
 pub struct ConsumerFailures {
-    postgres: PgPool,
-    metrics: Arc<Metrics>,
-    committer: Arc<OffsetCommitter>,
+    tx: mpsc::Sender<OwnedFailedLog>, // 실패 로그 저장 Task로 넘기는 채널
+    committer: Arc<OffsetCommitter>,  // log_id에 사용할 topic 이름 조회용
 }
 
 impl ConsumerFailures {
+    // 실패 로그 저장 Task를 함께 실행함
     pub fn new(postgres: PgPool, metrics: Arc<Metrics>, committer: Arc<OffsetCommitter>) -> Self {
-        Self {
-            postgres,
-            metrics,
-            committer,
-        }
+        let (tx, rx) = mpsc::channel(FAILURE_CHANNEL_CAPACITY);
+        tokio::spawn(run_failure_writer(rx, postgres, metrics, committer.clone()));
+        Self { tx, committer }
     }
 
-    // storage_failures에 저장(성공할 때까지 재시도) 후 완료 처리
-    async fn record(&self, partition: i32, offset: i64, reason: &str, payload: &[u8]) {
-        let log_id = format!("kafka-{}-{}-{}", self.committer.topic(), partition, offset);
-        let failure = FailedLog {
-            log_id: &log_id,
+    // 실패 로그 저장 Task로 넘김 (채널이 가득 차면 대기 → 처리 Task의 permit이 반납되지 않아 Kafka 소비도 멈춤, backpressure)
+    // 넘기지 못하면 완료 처리하지 않음 → commit되지 않으므로 재시작 후 다시 처리됨
+    async fn record(&self, partition: i32, offset: i64, reason: String, payload: Vec<u8>) {
+        let failure = OwnedFailedLog {
+            log_id: format!("kafka-{}-{}-{}", self.committer.topic(), partition, offset),
             reason,
             payload,
             partition,
             offset,
         };
 
-        save_failures_until_ok(&self.postgres, &self.metrics, &[failure]).await;
-        self.committer.finish([(partition, offset)]);
+        if self.tx.send(failure).await.is_err() {
+            tracing::error!(
+                partition,
+                offset,
+                "[FAILURE CHANNEL CLOSED] 실패 로그 저장 Task가 종료되어 storage_failures에 넘기지 못함"
+            );
+        }
     }
+}
+
+// 실패 로그 저장 Task: 채널에 쌓인 실패 로그를 Batch로 묶어 PostgreSQL INSERT (성공할 때까지 재시도) 후 Batch의 offset을 완료 처리
+async fn run_failure_writer(
+    mut rx: mpsc::Receiver<OwnedFailedLog>,
+    postgres: PgPool,
+    metrics: Arc<Metrics>,
+    committer: Arc<OffsetCommitter>,
+) {
+    while let Some(batch) = collect_failures(&mut rx).await {
+        let failures: Vec<FailedLog> = batch.iter().map(OwnedFailedLog::as_failed_log).collect();
+        save_failures_until_ok(&postgres, &metrics, &failures).await;
+        committer.finish(batch.iter().map(|f| (f.partition, f.offset)));
+    }
+
+    tracing::warn!("[FAILURE WRITER CLOSED] 채널이 닫혀 실패 로그 저장 Task를 종료함");
 }
 
 pub fn build_consumer(
@@ -460,8 +482,8 @@ pub async fn run(
     }
 }
 
-// 처리할 수 없는 메시지를 storage_failures에 보관하는 Task 실행
-// DB 저장을 기다리는 동안 수신 루프가 멈추지 않도록 별도 Task로 실행하고,
+// 처리할 수 없는 메시지를 PostgreSQL storage_failures에 보관하는 Task 실행
+// 채널로 넘기는 동안 수신 루프가 멈추지 않도록 별도 Task로 실행하고,
 // permit을 먼저 받아 정상 이벤트와 같은 동시 처리 제한을 받음 (잘못된 메시지가 몰려도 Task가 무한히 생기지 않음)
 // Semaphore가 닫혔으면 false를 반환하고 수신 루프를 종료함
 async fn spawn_failure_record(
@@ -479,8 +501,8 @@ async fn spawn_failure_record(
 
     let failures = failures.clone();
     tokio::spawn(async move {
-        let _permit = permit; // 보관이 끝나면 permit 반환
-        failures.record(partition, offset, &reason, &payload).await;
+        let _permit = permit; // 채널로 넘기면 permit 반환
+        failures.record(partition, offset, reason, payload).await;
     });
     true
 }
@@ -531,7 +553,7 @@ async fn process_event(
             let reason = format!("저장 로그 직렬화 실패: {e}");
             let payload = format!("{evidence:?} / playbook_result: {playbook_result:?}");
             failures
-                .record(partition, offset, &reason, payload.as_bytes())
+                .record(partition, offset, reason, payload.into_bytes())
                 .await;
             return;
         }

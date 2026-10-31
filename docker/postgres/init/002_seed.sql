@@ -20,18 +20,18 @@ INSERT INTO playbooks (name, description, enabled, nodes) VALUES
   ]$json$::jsonb
 ),
 (
-  '파일 다운로드 차단',
-  '모든 파일 다운로드 이벤트를 DENY 처리',
+  '고위험 IP 차단',
+  '이벤트 종류와 관계없이 AbuseIPDB 80점 이상 IP의 이벤트를 DENY 처리',
   TRUE,
   $json$[
-    { "type": "condition", "name": "파일 다운로드만",
-      "when": { "field": "event_type", "op": "eq", "value": "file_download" } },
+    { "type": "condition", "name": "고위험 IP",
+      "when": { "field": "enrichment_src_ip.data.abuse_confidence_score", "op": "gte", "value": 80 } },
     { "type": "response", "action": "DENY" }
   ]$json$::jsonb
 ),
 (
   '애매한 파일 AI 분석',
-  'VirusTotal 악성 탐지가 1~9개인 파일 다운로드를 AI로 분석하고, 위험도에 따라 HOLD/DENY/DETECT 처리',
+  'VirusTotal 악성 탐지가 1~9개인 파일 다운로드를 AI로 분석하고, 위험도에 따라 DENY/HOLD/DETECT 처리',
   FALSE,  -- Ollama 실행 후 활성화
   $json$[
     { "type": "condition", "name": "파일 다운로드 + 애매한 구간",
@@ -42,7 +42,7 @@ INSERT INTO playbooks (name, description, enabled, nodes) VALUES
     { "type": "ai_response",
       "model": "qwen2.5:14b-instruct",
       "prompt": "보안 이벤트와 enrichment 결과를 분석하고 위험도를 판단하라.",
-      "actions": { "HIGH": "HOLD", "MEDIUM": "DENY", "LOW": "DETECT" } }
+      "actions": { "HIGH": "DENY", "MEDIUM": "HOLD", "LOW": "DETECT" } }
   ]$json$::jsonb
 ),
 (
@@ -62,12 +62,23 @@ INSERT INTO playbooks (name, description, enabled, nodes) VALUES
       "when": { "field": "file_name", "op": "ends_with", "value": ".exe" } },
     { "type": "response", "action": "DENY" }
   ]$json$::jsonb
+),
+(
+  '차단 도메인 비컨 차단',
+  '차단 대상 도메인(c2.devil.example)으로 주기적 통신하는 DNS beacon 이벤트를 DENY 처리',
+  TRUE,
+  $json$[
+    { "type": "condition", "name": "DNS beacon만",
+      "when": { "field": "event_type", "op": "eq", "value": "dns_beacon" } },
+    { "type": "condition", "name": "차단 도메인",
+      "when": { "field": "dst_domain", "op": "eq", "value": "c2.devil.example" } },
+    { "type": "response", "action": "DENY" }
+  ]$json$::jsonb
 );
-
 
 -- 다수결 테스트용 플레이북 샘플
 --
--- 테스트 이벤트 예시 (다른 샘플 플레이북이 함께 걸리지 않도록 file_download가 아닌 이벤트 사용)
+-- 테스트 이벤트 예시
 --   {
 --     "event_id": "evt-test-1",
 --     "event_type": "login_failure",

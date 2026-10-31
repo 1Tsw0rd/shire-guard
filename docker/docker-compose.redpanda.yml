@@ -21,7 +21,7 @@ services:
       # internal://0.0.0.0:9092은 같은 Docker 네트워크(shire-net) 안의 다른 컨테이너(Vector 등)가 접속할 때 쓰는 주소
       #
       # external://0.0.0.0:${REDPANDA_PORT}은 호스트 머신(네 컴퓨터)에서 직접 접속할 때 쓰는 주소
-      #     .env의 REDPANDA_PORT(19092) 값을 그대로 사용
+      #     .env의 REDPANDA_PORT(29092) 값을 그대로 사용
       #
 
       - --advertise-kafka-addr
@@ -31,7 +31,7 @@ services:
       # internal://redpanda:9092는 Docker 네트워크 안에서는 "redpanda"라는 서비스 이름으로 접속하라고 안내
       #     (Kafka 때 "localhost가 아니라 서비스명 kafka로"라고 했던 것과 동일한 이유)
       #
-      # external://localhost:${REDPANDA_PORT}는 호스트에서 접속할 땐 localhost:19092로 오라고 안내
+      # external://localhost:${REDPANDA_PORT}는 호스트에서 접속할 땐 localhost:29092로 오라고 안내
 
       - --rpc-addr
       - redpanda:33145

@@ -9,8 +9,14 @@ use crate::common::error::AppError;
 // 조회 요청 1번의 응답 제한 시간
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
 
+// OpenSearch 서버에 연결하는 데 걸리는 제한 시간
+// BULK_TIMEOUT(5분)은 연결 단계에도 적용되므로, 연결이 응답 없이 멈추는 경우(네트워크 단절 등) 5초 만에 재시도로 넘어가게 함
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 // Bulk 요청 1번의 응답 제한 시간
-const BULK_TIMEOUT: Duration = Duration::from_secs(30);
+// OpenSearch는 클라이언트가 연결을 끊어도 받은 Bulk를 끝까지 처리하므로, 짧게 잡으면 처리 중인 Batch를 다시 보내 중복 요청이 쌓임
+// (30초일 때 같은 Batch가 최대 4중으로 쌓여 indexing pressure 한도에 근접함, 가장 오래 걸린 Bulk 약 2분 기준으로 여유를 두어 5분)
+const BULK_TIMEOUT: Duration = Duration::from_secs(300);
 
 // Bulk 응답에서 필요한 필드만 받도록 요청
 const BULK_RESPONSE_FILTER: &str = "items.*.status,items.*.error.type,items.*.error.reason";
@@ -37,12 +43,15 @@ pub struct OpenSearchClient {
 
 impl OpenSearchClient {
     pub fn new(base_url: String) -> Result<Self, AppError> {
-        let http = reqwest::Client::builder().build().map_err(|err| {
-            AppError::Internal(format!(
-                "OpenSearch 클라이언트 생성에 실패했습니다: {}",
-                err
-            ))
-        })?;
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .map_err(|err| {
+                AppError::Internal(format!(
+                    "OpenSearch 클라이언트 생성에 실패했습니다: {}",
+                    err
+                ))
+            })?;
 
         Ok(Self { http, base_url })
     }
