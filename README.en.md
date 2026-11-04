@@ -1072,4 +1072,3 @@ sequenceDiagram
 - [ ] **Playbook create / update / delete API**: when a playbook create/update/delete occurs, replace the entire list of active playbooks with a write Lock (events being evaluated keep using the existing list, so processing does not stop)
 - [ ] **Query API**: support full query / conditional search of event logs and playbook logs in OpenSearch
 - [ ] **Report generation**: generate HWPX / DOCX reports with ClickHouse aggregation
-- [ ] **Review jev / Laya**
