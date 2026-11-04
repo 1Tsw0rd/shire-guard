@@ -30,7 +30,7 @@ ai.rs: AI 대응 노드의 실행 담당
                                           ↓
                                        캐시 재확인 (직전 leader가 방금 저장했을 수 있음)
                                           ↓
-                                       Ollama 순번 대기 (동시 1개)
+                                       Ollama 순번 대기 (동시 OLLAMA_NUM_PARALLEL개)
                                           ↓
                                        Ollama 호출
                                           ↓
@@ -57,8 +57,7 @@ ai.rs: AI 대응 노드의 실행 담당
 - 다음 요청은 새로 시도함
 
 주의할 점
-- Ollama는 콜드 스타트 시 모델 로드에 16~22초가 걸렸음 (실측: qwen 22초, Foundation-Sec 16초)
-  -> keep_alive로 모델을 메모리에 유지해 재요청 비용을 줄임
+- Ollama 컨테이너 시작 시 모델을 미리 로드하고 (콜드 스타트 제거) OLLAMA_KEEP_ALIVE=-1로 메모리에 계속 유지함
 - LLM이 만든 JSON은 risk/reason 필드 순서가 모델마다 다를 수 있음
   -> serde_json은 키 이름으로 매칭하므로 순서는 문제되지 않음. 필드 누락/오타만 InvalidResponse로 처리
 - message.content는 JSON "문자열"로 옴 (이미 파싱된 객체가 아님) -> 한 번 더 파싱 필요
@@ -188,11 +187,11 @@ pub struct AiClient {
 }
 
 impl AiClient {
-    pub fn new(redis: RedisClient, base_url: String) -> Result<Self, AppError> {
-        // Ollama에 동시에 보내는 요청 수
-        // Ollama의 OLLAMA_NUM_PARALLEL 기본값이 1이라 같은 값으로 맞춤 (Ollama 설정을 올리면 이 값도 같이 올려야 함)
-        const OLLAMA_MAX_CONCURRENCY: usize = 1;
-
+    pub fn new(
+        redis: RedisClient,
+        base_url: String,
+        max_concurrency: usize,
+    ) -> Result<Self, AppError> {
         let http = reqwest::Client::builder()
             .build()
             .map_err(|e| AppError::Internal(format!("Ollama HTTP client 생성 실패: {e}")))?;
@@ -202,7 +201,7 @@ impl AiClient {
             redis,
             base_url,
             in_flight: Arc::new(Mutex::new(HashMap::new())),
-            ollama_semaphore: Arc::new(Semaphore::new(OLLAMA_MAX_CONCURRENCY)),
+            ollama_semaphore: Arc::new(Semaphore::new(max_concurrency)),
         })
     }
 
@@ -210,7 +209,6 @@ impl AiClient {
     pub async fn call(&self, model: AiModel, prompt: &str, evidence: &Evidence) -> AiResult {
         // AI 요청 하나가 끝나기까지의 전체 상한 (캐시 조회 + 순번 대기 + Ollama 호출 + waiter 대기)
         // 초과하면 Timeout 에러를 반환하고, engine에서 해당 플레이북의 결정을 HOLD로 처리함
-        // 산정 근거: 콜드 스타트 실측 qwen 22초, Foundation-Sec 16초 + 순번 대기 시간 -> 60초
         const AI_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
         match timeout(AI_CALL_TIMEOUT, self.call_inner(model, prompt, evidence)).await {
@@ -340,10 +338,6 @@ impl AiClient {
 
     // 실제 Ollama HTTP 호출: 캐시 로직과 분리해서 이 함수는 "호출 자체"만 책임짐
     async fn call_ollama(&self, model: AiModel, prompt: &str, evidence: &Evidence) -> AiResult {
-        // 호출이 끝난 뒤 Ollama가 모델을 메모리(RAM/GPU)에 유지하는 시간 (AI 결과를 저장하는 옵션이 아님)
-        // 이 시간 안에 다시 요청이 오면 모델 로드(콜드 스타트)를 건너뜀
-        const OLLAMA_KEEP_ALIVE: &str = "30m";
-
         // 캐시 키와 같은 입력(event_id/timestamp/ingested_at 제외)을 전송함
         let evidence_json = match evidence_input(evidence) {
             Ok(s) => s,
@@ -371,7 +365,6 @@ impl AiClient {
             // temperature 0: 같은 입력에는 같은 답이 나오도록 무작위성을 제거 (완전한 결정성은 캐시로 보장)
             "options": { "temperature": 0 },
             "stream": false, // 응답을 실시간 조각 단위로 받지 않고, 완성된 응답을 한 번에 받음
-            "keep_alive": OLLAMA_KEEP_ALIVE,
         });
 
         let response = match self

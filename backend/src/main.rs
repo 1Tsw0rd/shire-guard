@@ -87,8 +87,12 @@ async fn main() {
     let playbook_store = PlaybookStore::load(&postgres)
         .await
         .expect("Playbook 로드 실패");
-    let ai_client =
-        AiClient::new(redis_for_ai, config.ollama_base_url.clone()).expect("AI Client 생성 실패");
+    let ai_client = AiClient::new(
+        redis_for_ai,
+        config.ollama_base_url.clone(),
+        config.ollama_num_parallel,
+    )
+    .expect("AI Client 생성 실패");
     let engine = Arc::new(PlaybookEngine::new(playbook_store, ai_client));
 
     // Prometheus metrics 초기화 (config.broker 기준으로 active_broker 게이지 세팅)
