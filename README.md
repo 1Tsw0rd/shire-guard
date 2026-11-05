@@ -22,7 +22,7 @@
 
 > **Project context**
 >
-> - 개발 기간: 약 2개월
+> - 개발 시작일: 2026-09-03
 >
 > - 개발 방식: AI 페어 프로그래밍(설계 대안 비교/코드 리뷰에 AI를 활용하고, 모든 코드는 직접 검토 및 테스트 후 반영)
 >
@@ -65,7 +65,7 @@
 | Message Broker | Apache Kafka (KRaft) / RedPanda |
 | Cache / Lock | Redis / Dragonfly |
 | Storage | OpenSearch, ClickHouse, PostgreSQL (SQLx) |
-| AI | Ollama (Qwen2.5 14B Instruct, Foundation-Sec 8B Reasoning) |
+| AI | Ollama (Gemma 4 12B, Phi-4 14B) |
 | Threat Intelligence | AbuseIPDB, VirusTotal, DNS |
 | Monitoring | Prometheus, Grafana, Loki, cAdvisor, JMX Exporter |
 | Infra | Docker Compose |
@@ -99,8 +99,9 @@ shire-guard/
 │   ├── notes/                   # 개발 당시 작성한 메모
 │   ├── samples/                 # 외부 API · AI 응답 원본 예시
 │   ├── API.md                   # API 명세
+│   ├── DEMO.md                  # 시나리오별 시연 문서(영상 포함)
 │   └── DEVELOPMENT.md           # 개발 환경 · 실행 · 테스트 가이드
-├── scripts/                     # loadgen(부하 테스트) · dbbench(DB 저장 성능) · 컨테이너 관리 · Ollama 테스트 스크립트
+├── scripts/                     # 테스트 · 운영 도구 (부하 테스트, DB 성능 측정, 모니터링 등)
 └── README.md
 ```
 
@@ -172,7 +173,7 @@ flowchart TB
 | [9] | PostgreSQL | 테이블 `playbooks`: 플레이북 설정 / `storage_failures`: OpenSearch가 거절한 로그와 처리 불가 메시지 원문 |
 | [10] | Threat Intel | AbuseIPDB(IP), DNS(도메인), VirusTotal(파일 해시) 외부 조회 대상 |
 | [11] | Redis / Dragonfly | Enrichment와 플레이북 AI 대응 노드 결과 캐시 (환경변수 `CACHE_BACKEND`로 Redis/Dragonfly 선택 가능) |
-| [12] | Ollama | AI 대응 노드용 로컬 LLM (사용 모델: Qwen2.5 14B Instruct, Foundation-Sec 8B Reasoning) |
+| [12] | Ollama | AI 대응 노드용 로컬 LLM (사용 모델: gemma4:12b, phi4:14b) |
 
 ---
 
@@ -219,7 +220,7 @@ flowchart TB
 
 | 번호 | 구성 요소 | 역할 |
 |---|---|---|
-| [1] | Rust Backend | `/metrics` 엔드포인트로 이벤트 수신·파싱·실패 건수, 브로커 연결 상태, 활성 브로커 및 캐시 설정 등의 애플리케이션 Metric을 노출 |
+| [1] | Rust Backend | `/metrics` 엔드포인트로 이벤트 수신·파싱·저장 건수, Kafka commit offset·LAG, 브로커 연결 상태 등 애플리케이션 Metric을 노출 |
 | [2] | Vector | Prometheus Exporter를 통해 이벤트 수신·전송·버림(discard) 이벤트 수, 버퍼 사용량 등 Vector 내부 Metric을 노출 |
 | [3] | Kafka |  JMX Exporter를 통해 Kafka 브로커 및 토픽 관련 Metric을 노출 |
 | [4] | RedPanda | `/public_metrics` 엔드포인트를 통해 브로커 자체 Metric을 노출 |
@@ -765,15 +766,15 @@ flowchart LR
 
 - 대응 노드와 마찬가지로 플레이북 구성 맨 끝에 위치하며, 규칙으로 정하기 어렵고 건수가 적을 것으로 예상되는 이벤트를 로컬 LLM(Ollama)이 위험도(HIGH / MEDIUM / LOW)로 판단
 - 판단된 위험도를 플레이북에 설정한 action으로 변환 (매핑에 없는 위험도는 판정 없음)
-- AI 오류 · 60초 초과 · 캐시 장애에 대한 action은 모두 HOLD로 판정 (담당자 확인 대상)
-- 사용 가능한 AI 모델은 현재 2개: `qwen2.5:14b-instruct`, `Foundation-Sec-8B-Reasoning`
+- AI 오류 · 300초 초과 · 캐시 장애 · 출력 토큰 한도 초과에 대한 action은 모두 HOLD로 판정 (담당자 확인 대상)
+- 사용 가능한 AI 모델은 현재 2개: `gemma4:12b (thinking 사용)`, `phi4:14b (thinking 미사용)`
 
 ```jsonc
 {
   "type": "ai_response",
 
   // AI 분석에 사용할 Ollama 모델
-  "model": "qwen2.5:14b-instruct",
+  "model": "gemma4:12b",
 
   // AI에게 주는 분석 지시문
   // 분석 대상인 이벤트 + Enrichment 결과는 자동으로 함께 전달됨
@@ -788,7 +789,7 @@ flowchart LR
 
 **AI 호출 처리**
 
-- Ollama 기본 동시 처리 수(`OLLAMA_NUM_PARALLEL=1`)에 맞춰 한 번에 하나씩 호출
+- Ollama 동시 처리 수(`OLLAMA_NUM_PARALLEL`)와 같은 값으로 Backend 전체 AI 동시 호출을 제한
 
 ```mermaid
 flowchart TD
@@ -808,7 +809,7 @@ flowchart TD
     CACHE -->|"Miss"| SF{"동일 입력의 AI 요청이<br/>이미 진행 중인가?<br/>(모델 · 프롬프트 · Evidence)"}
 
     SF -->|"예"| JOIN["기존 요청 완료 대기<br/>(중복 Ollama 호출 방지)"]
-    SF -->|"아니오"| Q["Ollama 호출 순번 대기<br/>(동시 호출 최대 1개)"]
+    SF -->|"아니오"| Q["Ollama 호출 순번 대기<br/>(동시 호출 최대 OLLAMA_NUM_PARALLEL개)"]
 
     Q --> OL["Ollama 호출"]
     OL -->|"성공"| SAVE
@@ -822,7 +823,7 @@ flowchart TD
 **AI 대응 노드 결과 예시** (`playbook_result.playbooks[]` 항목)
 
 ```jsonc
-// 성공한 경우: AI가 반환한 risk(HIGH)를 actions 매핑에 따라 DENY로 판정
+// 성공한 경우 예시: AI가 반환한 risk(HIGH)를 actions 매핑에 따라 DENY로 판정
 {
   "playbook_id": 3,
   "name": "애매한 파일 AI 분석",
@@ -831,12 +832,12 @@ flowchart TD
   "ai_result": {
     "status": "success",
     "risk": "HIGH",
-    "reason": "The file name 'invoice.exe' is suspicious because it ends with '.exe' ...",
-    "model": "qwen2.5:14b-instruct"
+    "reason": "확인된 사실: 파일 해시(784c88f2297ffe774b9b1330f12690d59f9d08ce89e97a74debd687de9ed2cd7)가 VirusTotal에서 3개의 엔진에 의해 악성으로 탐지되었다. 분석 결과: 파일 해시에 대한 직접적인 악성 판정은 해당 파일이 보안 위협을 유발할 가능성이 매우 높음을 강력하게 시사한다. 권고 조치: 해당 파일을 즉각 삭제하고 해당 시스템에 대한 추가적인 정밀 점검을 수행해야 한다.",
+    "model": "gemma4:12b"
   }
 }
 
-// 실패한 경우: AI 오류 · 시간 초과 · 캐시 장애는 매핑과 관계없이 HOLD로 판정 (risk · reason 없이 error 기록)
+// 실패한 경우 예시: AI 오류 · 시간 초과 · 캐시 장애 · 출력 토큰 한도 초과는 매핑과 관계없이 HOLD로 판정 (risk · reason 없이 error 기록)
 {
   "playbook_id": 3,
   "name": "애매한 파일 AI 분석",
@@ -845,7 +846,7 @@ flowchart TD
   "ai_result": {
     "status": "error",
     "error": "timeout",
-    "model": "qwen2.5:14b-instruct"
+    "model": "gemma4:12b"
   }
 }
 ```
@@ -1040,6 +1041,8 @@ sequenceDiagram
 
 ### 처리량 측정 결과
 
+> 처리량은 AI 대응 노드를 비활성화한 상태에서 측정함
+
 | 구간 | 처리량 | 비고 |
 |---|---|---|
 | Rust 처리 (Enrichment → Playbook) | 약 11만/s | Enrichment 캐시 히트 조건 |
@@ -1057,7 +1060,7 @@ sequenceDiagram
 
 - **구간별 처리량**: 각 구간에 최대 부하를 걸어 측정하여 초당 약 10만 건 전후 확인
 - **전체 처리량**: 모든 서비스가 노트북 1대의 CPU를 나눠 쓰므로 개별 구간보다 낮음
-- **유실률**: 100만 건 처리 중 강제 종료 후 재시작 테스트에서 0%
+- **유실률**: 500만 건 처리 중 Kafka 중단 · Rust 강제 종료 후 복구 테스트에서 0% (AI 대응 노드 활성 상태 포함)
 
 ---
 
