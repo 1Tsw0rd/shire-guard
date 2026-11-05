@@ -12,7 +12,112 @@
 
 ---
 
-## 1. Qwen2.5 14B (`ollama 1 --ko`)
+## 1. gemma4:12b (`ollama 1 --ko`)
+
+```bash
+./test.ollama.sh ollama 1 --ko
+```
+
+```text
+▶ Ollama 모델 [gemma4:12b] 호출 중...
+{"model":"gemma4:12b",
+  "created_at":"2026-11-05T10:29:59.395977379Z",
+  "message":{"role":"assistant",
+  "content":"**Risk Assessment:** HIGH\n\n**Reasoning:**\n1. **Suspicious Naming:** The filename `invoice_2026.exe` follows a common pattern used in phishing campaigns to trick users into executing a malicious payload under the guise of a business document.\n2. **Obfuscation:** The detection of **UPX packing** indicates that the executable's code is compressed/obfuscated to evade basic static analysis,
+   a frequent technique used by malware authors.\n3. **High Confidence Score:** A **41/72 detection rate** on VirusTotal is a strong indicator that the file contains known malicious signatures or behavior,
+   confirming it as a high-priority threat.",
+  "thinking":"*   Filename: `invoice_2026.exe` (Suspicious naming convention: common for phishing/malware,
+   implying a future date or just a generic \"invoice\" name).\n    *   Packing: UPX packing detected (Commonly used by malware to obfuscate code and reduce file size).\n    *   VirusTotal Score: 41/72 detections (High detection rate,
+   indicating well-known malicious signatures).\n\n    *   *Risk Assessment:* HIGH.\n\n    *   *Reasoning:*\n        1.  *Naming:* `invoice_2026.exe` is a classic masquerading tactic used in phishing campaigns.\n        2.  *Packing:* UPX packing is a common technique for hiding malicious payloads from static analysis.\n        3.  *Detection Rate:* 41/72 is a very high confidence score,
+   suggesting it is a confirmed threat.\n\n    *   Risk: HIGH\n    *   Reasoning: The file uses a classic phishing-style name (`invoice_...`),
+   is obfuscated with UPX packing (a common malware tactic),
+   and has a high detection rate on VirusTotal (41/72),
+   strongly indicating a malicious executable."},
+  "done":true,
+  "done_reason":"stop",
+  "total_duration":5194401337,
+  "load_duration":1201990,
+  "prompt_eval_count":78,
+  "prompt_eval_cached_count":0,
+  "prompt_eval_duration":673908000,
+  "eval_count":401,
+  "eval_duration":4512600000}
+
+▶ 한국어 번역 중... (translategemma:12b)
+{"model":"translategemma:12b",
+  "created_at":"2026-11-05T10:30:17.177048996Z",
+  "message":{"role":"assistant",
+  "content":"**위험 평가:** 매우 높음 (HIGH)\n\n**이유:**\n1. **의심스러운 파일명:** 파일명 `invoice_2026.exe`는 피싱 공격에서 흔히 사용되는 패턴으로,
+   사용자가 악성 코드를 실행하도록 속이는 데 사용됩니다. 이는 정상적인 업무 문서로 위장한 악성 프로그램을 숨기기 위한 기법입니다.\n2. **난독화:** **UPX 압축**이 감지된 것은 실행 파일의 코드가 압축되거나 난독화되어 기본적인 정적 분석을 회피하도록 만들어졌다는 것을 의미합니다. 이는 악성 프로그램 제작자가 자주 사용하는 기술입니다.\n3. **높은 신뢰도 점수:** VirusTotal에서 **41/72의 탐지율**은 해당 파일에 알려진 악성 코드의 특징이나 악성 행위가 포함되어 있을 가능성이 매우 높다는 강력한 지표입니다. 따라서,
+   이는 매우 중요한 위협으로 간주됩니다.\n"},
+  "done":true,
+  "done_reason":"stop",
+  "total_duration":17588578083,
+  "load_duration":13374868923,
+  "prompt_eval_count":156,
+  "prompt_eval_cached_count":0,
+  "prompt_eval_duration":192685000,
+  "eval_count":213,
+  "eval_duration":4009769000}
+
+```
+
+## 2. phi4:14b (`ollama 2 --ko`) 
+
+```bash
+./test.ollama.sh ollama 2 --ko
+```
+
+```text
+▶ Ollama 모델 [phi4:14b] 호출 중...
+{"model":"phi4:14b",
+  "created_at":"2026-11-05T10:30:33.10095722Z",
+  "message":{"role":"assistant",
+  "content":"**Risk Assessment: HIGH**\n\n**Reasoning:**\n\n1. **Filename Deception**: The file is named `invoice_2026.exe`,
+   which is a common tactic used in phishing attacks to trick users into believing the file is legitimate,
+   especially invoices that businesses frequently exchange.\n\n2. **UPX Packing**: The presence of UPX (Ultimate Packer for Executables) packing indicates that the executable is compressed. While not inherently malicious,
+   UPX is often used by malware authors to obfuscate their code,
+   making it harder for security tools to analyze and detect malicious behavior.\n\n3. **VirusTotal Detections**: Out of 72 antivirus engines,
+   41 have detected the file as malicious. This high number of detections strongly suggests that the file contains harmful code or behavior,
+   as multiple independent security solutions have identified it as a threat.\n\nGiven these factors,
+   the combination of deceptive naming,
+   obfuscation through packing,
+   and a high number of detections indicates a high risk of the file being malicious."},
+  "done":true,
+  "done_reason":"stop",
+  "total_duration":12937724942,
+  "load_duration":8892451552,
+  "prompt_eval_count":76,
+  "prompt_eval_cached_count":0,
+  "prompt_eval_duration":218123000,
+  "eval_count":204,
+  "eval_duration":3824387000}
+
+▶ 한국어 번역 중... (translategemma:12b)
+{"model":"translategemma:12b",
+  "created_at":"2026-11-05T10:30:43.199301546Z",
+  "message":{"role":"assistant",
+  "content":"**위험 평가: 높음 (HIGH)**\n\n**이유:**\n\n1. **파일명 속임수 (Filename Deception):** 파일 이름이 `invoice_2026.exe`로 되어 있는데,
+   이는 사용자를 속이기 위한 흔한 피싱 공격 수법입니다. 특히 기업들이 자주 주고받는 송장(invoice)이라는 이름으로 위장하여 사용자가 파일을 정상적인 것으로 오해하게 만들 수 있습니다.\n\n2. **UPX 압축 (UPX Packing):** UPX(Ultimate Packer for Executables) 압축 기술이 사용된 것을 확인했습니다. UPX는 실행 파일의 크기를 줄이는 기술이지만,
+   악성 코드 제작자들이 자신의 코드를 숨겨 보안 도구의 분석과 악성 행위 탐지를 어렵게 만들기 위해 자주 사용하는 기술입니다.\n\n3. **VirusTotal 탐지 건수 (VirusTotal Detections):** VirusTotal의 72개 백신 엔진 중 41개가 해당 파일을 악성으로 탐지했습니다. 이렇게 높은 탐지 비율은 파일에 유해한 코드나 행위가 포함되어 있을 가능성이 매우 높다는 것을 의미합니다. 여러 독립적인 보안 솔루션에서 해당 파일을 위협으로 판단했다는 것은 결정적인 증거입니다.\n\n이러한 요인들을 종합적으로 고려했을 때,
+   속임수 파일 이름,
+   압축을 통한 난독화,
+   그리고 높은 탐지 비율은 해당 파일이 악성일 위험이 매우 높다는 것을 나타냅니다.\n"},
+  "done":true,
+  "done_reason":"stop",
+  "total_duration":9830869055,
+  "load_duration":4153946861,
+  "prompt_eval_count":221,
+  "prompt_eval_cached_count":0,
+  "prompt_eval_duration":196699000,
+  "eval_count":313,
+  "eval_duration":5475291000}
+
+```
+
+## 부록: 이전 후보 모델 결과 (qwen2.5:14b, Foundation-Sec 8B)
+
+### 1. Qwen2.5 14B (`ollama 1 --ko`)
 
 ```bash
 ./test.ollama.sh ollama 1 --ko
@@ -63,7 +168,7 @@
 ---
 ---
 
-## 2. Foundation-Sec 8B Reasoning (`ollama 2 --ko`)
+### 2. Foundation-Sec 8B Reasoning (`ollama 2 --ko`)
 
 - 추론(Reasoning) 모델이라 응답 앞부분에 판단 과정이 먼저 나오고, `</think>`(응답에서는 `\u003c/think\u003e`) 뒤에 최종 답변이 나옴
 

@@ -84,6 +84,8 @@ cmake --version
 
 - NVIDIA GPU
   - AI 판정 기능(Ollama)을 사용할 때만 필요, GPU가 없으면 `ollama` 컨테이너가 실행되지 않음
+  - gemma4:12b와 phi4:14b를 함께 올리려면 VRAM 약 24GB 필요 (개발 환경 RTX 5090 Laptop 24GB, `OLLAMA_CONTEXT_LENGTH=4096` 기준 약 23GB 사용)
+  - VRAM이 부족하면 모델이 서로를 밀어내서 호출할 때마다 모델을 다시 올리게 되고, AI 판정이 크게 느려짐
 
 ```bash
 # GPU 확인
@@ -166,15 +168,15 @@ docker compose ps
 Shire Guard > Playbook > AI 대응 노드를 사용할 때 필요
 
 ```bash
-docker exec -it ollama ollama pull qwen2.5:14b-instruct
-docker exec -it ollama ollama pull hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF
+docker exec -it ollama ollama pull gemma4:12b
+docker exec -it ollama ollama pull phi4:14b
 
 # 다운로드된 모델 확인
 docker exec -it ollama ollama list
 
 # NAME
-# hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF:latest
-# qwen2.5:14b-instruct
+# gemma4:12b
+# phi4:14b
 ```
 
 ### 3.3 운영
@@ -269,7 +271,7 @@ Grafana 왼쪽 메뉴 Alerting → Alert rules → 오른쪽 상단 More → Imp
 
 **대시보드**
 
-Grafana 왼쪽 메뉴 Dashboards -> shire-guard -> shire-guard-alerts.yaml 선택 (아래 스크린샷 참고) -> 오른쪽 상단 New -> Import dashboard -> Upload dashboard JSON file ->  `shire-guard/docker/grafana/imports/shire-guard-dashboards.json` 선택 후 Import
+Grafana 왼쪽 메뉴 Dashboards → shire-guard → shire-guard-alerts.yaml 선택 (아래 스크린샷 참고) → 오른쪽 상단 New → Import dashboard → Upload dashboard JSON file →  `shire-guard/docker/grafana/imports/shire-guard-dashboards.json` 선택 후 Import
 
 <img src="assets/grafana-import-dashboard.png" alt="대시보드 import 설정" width="600">
 
@@ -308,6 +310,7 @@ curl http://localhost:3001/metrics
 | 구역 | 변수 | 기본값 | 설명 |
 |---|---|---|---|
 | Ollama | `OLLAMA_PORT` | `11434` | Ollama 포트 |
+| Ollama | `OLLAMA_NUM_PARALLEL` | `4` | Ollama: 모델 1개가 동시에 처리하는 요청 수 / Backend: 모든 모델을 합친 AI 동시 호출 수 |
 | Vector | `VECTOR_PORT` | `8081` | 이벤트 수신 포트 |
 | | `VECTOR_API_PORT` | `8686` | API·health 포트 |
 | | `VECTOR_METRICS_PORT` | `9598` | Metric 포트 |
@@ -594,6 +597,7 @@ cargo sqlx prepare -- --all-targets
 | [`test.ollama.sh`](../scripts/test.ollama.sh) | Ollama 모델을 직접 호출해 응답을 확인하는 수동 테스트 도구 |
 | [`dbbench`](../scripts/dbbench) | OpenSearch · ClickHouse 저장 성능 측정 도구 |
 | [`loadgen`](../scripts/loadgen) | Vector로 이벤트를 대량 전송하는 부하 테스트 도구 |
+| [`monitor.sh`](../scripts/monitor.sh) | 부하 테스트 중 소비·저장 속도, CPU, Kafka LAG, DB 응답 시간 등을 주기적으로 출력하는 모니터링 도구 |
 
 ### shire.sh (Docker 서비스 관리)
 
@@ -622,7 +626,7 @@ cd scripts
 # 사용법 확인 (--help 인자 없이 실행해도 동일)
 ./test.ollama.sh
 
-# 예시: 1번 모델(Qwen) 호출, 응답 한국어 번역
+# 예시: 1번 모델(Gemma4) 호출, 응답 한국어 번역
 ./test.ollama.sh ollama 1 --ko
 ```
 
@@ -667,6 +671,10 @@ cd scripts
 # 예시: login_failure / 안전 / 총 10000건 + 실패 10건 + 거부 10건
 ./loadgen.exe login_failure 15001 10000 --case safe --fail 10 --reject 10
 
+# 예시: AI 대응 노드 테스트 / 총 100만 건 (파싱 실패 약 1% 포함) / 동시성 1000
+# 실행 전 [TEST-AI] 플레이북만 활성화 필요 (docker/postgres/init/002_seed.sql 주석 참고)
+./loadgen.exe ai 1 1000000 1000
+
 # 결과 확인 방법 (웹 주소, 확인 명령)
 ./loadgen.exe check
 ```
@@ -677,45 +685,23 @@ cd scripts
 
 ### 부하 테스트 모니터링
 
-loadgen으로 전송하는 동안 별도 터미널에서 실행 (Ctrl+C로 종료)
+loadgen으로 전송하는 동안 별도 터미널에서 [`monitor.sh`](../scripts/monitor.sh) 실행 (Ctrl+C로 종료)
 
 ```bash
-# 소비 / 저장 건수와 초당 속도 (1초 간격, Backend 실행 중이어야 함)
-metric() { curl -s 127.0.0.1:3001/metrics | awk -v n="$1" '$0 ~ "^"n {s+=$2} END{print int(s)}'; }
-prev_r=$(metric shireguard_consumer_messages_received_total); prev_s=$(metric shireguard_storage_events_sent_total); prev_t=$(date +%s)
-while true; do
-  sleep 1
-  recv=$(metric shireguard_consumer_messages_received_total)
-  sent=$(metric shireguard_storage_events_sent_total)
-  retry=$(metric shireguard_storage_retries_total)
-  now=$(date +%s); dt=$((now-prev_t)); [ $dt -le 0 ] && dt=1
-  echo "$(date +%T)  소비=${recv}  소비속도=$(( (recv-prev_r)/dt ))/s  저장완료=${sent}  저장속도=$(( (sent-prev_s)/dt ))/s  재시도=${retry}"
-  prev_r=$recv; prev_s=$sent; prev_t=$now
-done
+cd scripts
 
-# 컨테이너 CPU / 메모리 (2초 간격, RedPanda 사용 시 kafka → redpanda)
-while true; do
-  docker stats --no-stream --format "{{.Name}}  CPU {{.CPUPerc}}  MEM {{.MemUsage}}" opensearch clickhouse kafka
-  echo "--- $(date +%T)"; sleep 2
-done
+# 저장소 루트에서 실행, 번호 없이 실행하면 도움말 출력
+./monitor.sh
 
-# Kafka 토픽 누적 메시지 수 (5초 간격, Kafka 사용 시)
-while true; do
-  echo "$(date +%T)  토픽누적=$(MSYS_NO_PATHCONV=1 docker exec -e KAFKA_OPTS= kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic test_topic --time -1 2>/dev/null | awk -F: '{s+=$3} END{print s+0}')"
-  sleep 5
-done
-
-# 측정 후: 저장소별 평균 응답 시간
-curl -s 127.0.0.1:3001/metrics | awk '
-/^shireguard_storage_request_seconds_(sum|count)/ {
-  match($0, /db="[a-z]+"/); d = substr($0, RSTART+4, RLENGTH-5)
-  if ($0 ~ /_sum/) s[d] = $2; else c[d] = $2
-}
-END { for (d in s) printf "%-10s 요청 %d회  평균 %.2f초\n", d, c[d], s[d]/c[d] }'
+# 예시: Kafka에서 이벤트를 꺼내 DB에 저장하기까지 전체 처리량 확인
+./monitor.sh 1
 ```
 
-```powershell
-# Rust Backend CPU (2초 간격, PowerShell)
-# 코어별 사용률의 합이라 100%를 넘을 수 있음 (예: 16코어를 모두 사용하면 1600)
-while ($true) { (Get-Counter '\Process(backend)\% Processor Time').CounterSamples.CookedValue; Start-Sleep 2 }
-```
+| 옵션 번호 | 내용 |
+|---|---|
+| 1 | Kafka에서 이벤트를 꺼내 DB에 저장하기까지 전체 처리량 |
+| 2 | Rust 서버 CPU 사용률 |
+| 3 | Kafka에 쌓인 이벤트 수, 처리 완료 위치(commit), 아직 commit되지 않은 이벤트 수(LAG) |
+| 4 | DB(OpenSearch, ClickHouse)가 Batch 저장 요청 1번을 처리하는 평균 시간 (구간 / 누적) |
+| 5 | Docker 컨테이너 CPU / 메모리 사용률 |
+| 6 | OpenSearch가 받는 쓰기 부하 (동시에 처리 중인 저장 요청 수, 쓰기 메모리 사용률, 요청별 처리 경과 시간) |
