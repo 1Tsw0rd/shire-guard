@@ -405,7 +405,7 @@ mod tests {
     fn walk_returns_ai_response_outcome() {
         let nodes = nodes_from(
             r#"[
-            { "type": "ai_response", "model": "qwen2.5:14b-instruct", "prompt": "분석하라",
+            { "type": "ai_response", "model": "gemma4:12b", "prompt": "분석하라",
               "actions": { "HIGH": "HOLD" } }
         ]"#,
         );
@@ -418,7 +418,7 @@ mod tests {
                 actions,
                 when,
             } => {
-                assert_eq!(model, AiModel::Qwen25Instruct14b);
+                assert_eq!(model, AiModel::Gemma4);
                 assert_eq!(prompt, "분석하라");
                 assert_eq!(actions.get(Risk::High), Some(Action::Hold));
                 assert_eq!(when, None);
@@ -437,7 +437,7 @@ mod tests {
         let result = AiResult::Success {
             risk: Risk::High,
             reason: "테스트".into(),
-            model: AiModel::Qwen25Instruct14b,
+            model: AiModel::Gemma4,
         };
         assert_eq!(resolve_ai_action(&result, &actions), Some(Action::Hold));
     }
@@ -449,7 +449,7 @@ mod tests {
         let result = AiResult::Success {
             risk: Risk::Low,
             reason: "테스트".into(),
-            model: AiModel::Qwen25Instruct14b,
+            model: AiModel::Gemma4,
         };
         assert_eq!(resolve_ai_action(&result, &actions), None);
     }
@@ -460,7 +460,7 @@ mod tests {
         let actions: RiskActions = serde_json::from_str(r#"{}"#).unwrap();
         let result = AiResult::Error {
             error: AiError::Timeout,
-            model: AiModel::Qwen25Instruct14b,
+            model: AiModel::Gemma4,
         };
         assert_eq!(resolve_ai_action(&result, &actions), Some(Action::Hold));
     }

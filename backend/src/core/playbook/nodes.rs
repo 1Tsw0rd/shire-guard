@@ -65,17 +65,17 @@ pub enum Risk {
 // 사용할 수 있는 AI 모델 (Ollama 태그)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AiModel {
-    #[serde(rename = "qwen2.5:14b-instruct")]
-    Qwen25Instruct14b,
-    #[serde(rename = "hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF")]
-    FoundationSec8bReasoning,
+    #[serde(rename = "gemma4:12b")]
+    Gemma4, // Google
+    #[serde(rename = "phi4:14b")]
+    Phi4, // Microsoft
 }
 
 impl AiModel {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Qwen25Instruct14b => "qwen2.5:14b-instruct",
-            Self::FoundationSec8bReasoning => "hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF",
+            Self::Gemma4 => "gemma4:12b",
+            Self::Phi4 => "phi4:14b",
         }
     }
 }
@@ -369,7 +369,7 @@ mod tests {
             { "type": "condition", "name": "파일 다운로드만",
               "when": { "field": "event_type", "op": "eq", "value": "file_download" } },
             { "type": "ai_response",
-              "model": "qwen2.5:14b-instruct",
+              "model": "gemma4:12b",
               "prompt": "분석하라",
               "actions": { "HIGH": "HOLD", "MEDIUM": "DENY", "LOW": "DETECT" } }
         ]"#,
@@ -378,7 +378,7 @@ mod tests {
 
         match &pb.nodes[1] {
             Node::AiResponse { model, actions, .. } => {
-                assert_eq!(*model, AiModel::Qwen25Instruct14b);
+                assert_eq!(*model, AiModel::Gemma4);
                 assert_eq!(actions.get(Risk::High), Some(Action::Hold));
                 assert_eq!(actions.get(Risk::Medium), Some(Action::Deny));
                 assert_eq!(actions.get(Risk::Low), Some(Action::Detect));
@@ -387,13 +387,13 @@ mod tests {
         }
     }
 
-    // 시나리오 4: 두 번째 모델(Foundation-Sec)도 파싱된다
+    // 시나리오 4: 두 번째 모델(Phi4)도 파싱된다
     #[test]
     fn parses_second_ai_model() {
         let pb = parse(
             r#"[
             { "type": "ai_response",
-              "model": "hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF",
+              "model": "phi4:14b",
               "prompt": "분석하라",
               "actions": { "HIGH": "HOLD" } }
         ]"#,
@@ -402,7 +402,7 @@ mod tests {
 
         match &pb.nodes[0] {
             Node::AiResponse { model, .. } => {
-                assert_eq!(*model, AiModel::FoundationSec8bReasoning);
+                assert_eq!(*model, AiModel::Phi4);
             }
             other => panic!("ai_response 노드여야 함: {other:?}"),
         }
@@ -412,10 +412,7 @@ mod tests {
     // (캐시 키에 as_str()을 쓰므로 serde rename과 어긋나면 안 됨)
     #[test]
     fn model_tags_match_serde() {
-        for model in [
-            AiModel::Qwen25Instruct14b,
-            AiModel::FoundationSec8bReasoning,
-        ] {
+        for model in [AiModel::Gemma4, AiModel::Phi4] {
             assert_eq!(
                 serde_json::to_value(model).unwrap(),
                 serde_json::json!(model.as_str())
@@ -463,12 +460,12 @@ mod tests {
             (
                 "AI actions가 비어 있음",
                 "actions에 매핑이 하나도 없음",
-                r#"[ { "type": "ai_response", "model": "qwen2.5:14b-instruct", "prompt": "p", "actions": {} } ]"#,
+                r#"[ { "type": "ai_response", "model": "gemma4:12b", "prompt": "p", "actions": {} } ]"#,
             ),
             (
                 "AI prompt가 비어 있음",
                 "prompt가 비어 있음",
-                r#"[ { "type": "ai_response", "model": "qwen2.5:14b-instruct", "prompt": " ", "actions": { "HIGH": "HOLD" } } ]"#,
+                r#"[ { "type": "ai_response", "model": "gemma4:12b", "prompt": " ", "actions": { "HIGH": "HOLD" } } ]"#,
             ),
             // ── serde 파싱 단계에서 거부 (에러 문구는 serde가 만듦) ──
             (
@@ -495,7 +492,7 @@ mod tests {
             (
                 "AI actions에 알 수 없는 risk (HGIH)",
                 "unknown field `HGIH`",
-                r#"[ { "type": "ai_response", "model": "qwen2.5:14b-instruct", "prompt": "p", "actions": { "HGIH": "HOLD" } } ]"#,
+                r#"[ { "type": "ai_response", "model": "gemma4:12b", "prompt": "p", "actions": { "HGIH": "HOLD" } } ]"#,
             ),
         ];
 
