@@ -690,7 +690,7 @@ loadgen으로 전송하는 동안 별도 터미널에서 [`monitor.sh`](../scrip
 ```bash
 cd scripts
 
-# 저장소 루트에서 실행, 번호 없이 실행하면 도움말 출력
+# scripts 폴더에서 실행, 번호 없이 실행하면 도움말 출력
 ./monitor.sh
 
 # 예시: Kafka에서 이벤트를 꺼내 DB에 저장하기까지 전체 처리량 확인

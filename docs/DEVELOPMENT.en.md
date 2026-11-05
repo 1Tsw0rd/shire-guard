@@ -84,6 +84,8 @@ cmake --version
 
 - NVIDIA GPU
   - Required only when using the AI decision feature (Ollama); without a GPU, the `ollama` container does not run
+  - About 24GB of VRAM is required to load gemma4:12b and phi4:14b together (development environment RTX 5090 Laptop 24GB, about 23GB used with `OLLAMA_CONTEXT_LENGTH=4096`)
+  - If VRAM is insufficient, the models push each other out, so a model is reloaded on every call and AI decisions become much slower
 
 ```bash
 # Check the GPU
@@ -166,15 +168,15 @@ docker compose ps
 Required when using Shire Guard > Playbook > AI response node
 
 ```bash
-docker exec -it ollama ollama pull qwen2.5:14b-instruct
-docker exec -it ollama ollama pull hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF
+docker exec -it ollama ollama pull gemma4:12b
+docker exec -it ollama ollama pull phi4:14b
 
 # Check the downloaded models
 docker exec -it ollama ollama list
 
 # NAME
-# hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF:latest
-# qwen2.5:14b-instruct
+# gemma4:12b
+# phi4:14b
 ```
 
 ### 3.3 Operation
@@ -269,7 +271,7 @@ Grafana left menu Alerting → Alert rules → More in the upper right → Impor
 
 **Dashboards**
 
-Grafana left menu Dashboards -> shire-guard -> select shire-guard-alerts.yaml (see the screenshot below) -> New in the upper right -> Import dashboard -> Upload dashboard JSON file ->  select `shire-guard/docker/grafana/imports/shire-guard-dashboards.json`, then Import
+Grafana left menu Dashboards → shire-guard → select shire-guard-alerts.yaml (see the screenshot below) → New in the upper right → Import dashboard → Upload dashboard JSON file →  select `shire-guard/docker/grafana/imports/shire-guard-dashboards.json`, then Import
 
 <img src="assets/grafana-import-dashboard.png" alt="Dashboard import settings" width="600">
 
@@ -308,6 +310,7 @@ curl http://localhost:3001/metrics
 | Section | Variable | Default | Description |
 |---|---|---|---|
 | Ollama | `OLLAMA_PORT` | `11434` | Ollama port |
+| Ollama | `OLLAMA_NUM_PARALLEL` | `4` | Ollama: number of requests one model processes concurrently / Backend: number of concurrent AI calls across all models |
 | Vector | `VECTOR_PORT` | `8081` | Event receiving port |
 | | `VECTOR_API_PORT` | `8686` | API·health port |
 | | `VECTOR_METRICS_PORT` | `9598` | Metric port |
@@ -596,6 +599,7 @@ cargo sqlx prepare -- --all-targets
 | [`test.ollama.sh`](../scripts/test.ollama.sh) | A manual test tool that calls an Ollama model directly to check its response |
 | [`dbbench`](../scripts/dbbench) | A tool that measures OpenSearch · ClickHouse storage performance |
 | [`loadgen`](../scripts/loadgen) | A load test tool that sends a large number of events to Vector |
+| [`monitor.sh`](../scripts/monitor.sh) | A monitoring tool that periodically prints consume·store speed, CPU, Kafka LAG, DB response time, etc. during a load test |
 
 ### shire.sh (Docker Service Management)
 
@@ -624,7 +628,7 @@ cd scripts
 # Check the usage (same as running without the --help argument)
 ./test.ollama.sh
 
-# Example: call model 1 (Qwen), translate the response into Korean
+# Example: call model 1 (Gemma4), translate the response into Korean
 ./test.ollama.sh ollama 1 --ko
 ```
 
@@ -669,6 +673,10 @@ cd scripts
 # Example: login_failure / safe / total 10000 events + 10 failures + 10 rejections
 ./loadgen.exe login_failure 15001 10000 --case safe --fail 10 --reject 10
 
+# Example: AI response node test / total 1 million events (including about 1% parse failures) / concurrency 1000
+# Before running, only the [TEST-AI] playbooks must be enabled (see the comments in docker/postgres/init/002_seed.sql)
+./loadgen.exe ai 1 1000000 1000
+
 # How to check the results (web addresses, check commands)
 ./loadgen.exe check
 ```
@@ -679,48 +687,23 @@ cd scripts
 
 ### Load Test Monitoring
 
-Run in a separate terminal while sending with loadgen (exit with Ctrl+C)
+Run [`monitor.sh`](../scripts/monitor.sh) in a separate terminal while sending with loadgen (exit with Ctrl+C)
 
 ```bash
-# Consumed / stored counts and per-second speed (1-second interval, the Backend must be running)
-# Output labels: 소비=consumed, 소비속도=consume rate, 저장완료=stored, 저장속도=store rate, 재시도=retries
-metric() { curl -s 127.0.0.1:3001/metrics | awk -v n="$1" '$0 ~ "^"n {s+=$2} END{print int(s)}'; }
-prev_r=$(metric shireguard_consumer_messages_received_total); prev_s=$(metric shireguard_storage_events_sent_total); prev_t=$(date +%s)
-while true; do
-  sleep 1
-  recv=$(metric shireguard_consumer_messages_received_total)
-  sent=$(metric shireguard_storage_events_sent_total)
-  retry=$(metric shireguard_storage_retries_total)
-  now=$(date +%s); dt=$((now-prev_t)); [ $dt -le 0 ] && dt=1
-  echo "$(date +%T)  소비=${recv}  소비속도=$(( (recv-prev_r)/dt ))/s  저장완료=${sent}  저장속도=$(( (sent-prev_s)/dt ))/s  재시도=${retry}"
-  prev_r=$recv; prev_s=$sent; prev_t=$now
-done
+cd scripts
 
-# Container CPU / memory (2-second interval; when using RedPanda, kafka → redpanda)
-while true; do
-  docker stats --no-stream --format "{{.Name}}  CPU {{.CPUPerc}}  MEM {{.MemUsage}}" opensearch clickhouse kafka
-  echo "--- $(date +%T)"; sleep 2
-done
+# Run in the scripts folder; running without a number prints the help
+./monitor.sh
 
-# Number of accumulated messages in the Kafka topic (5-second interval, when using Kafka)
-# Output label: 토픽누적=accumulated messages in the topic
-while true; do
-  echo "$(date +%T)  토픽누적=$(MSYS_NO_PATHCONV=1 docker exec -e KAFKA_OPTS= kafka /opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic test_topic --time -1 2>/dev/null | awk -F: '{s+=$3} END{print s+0}')"
-  sleep 5
-done
-
-# After measurement: average response time by storage
-# Output format: <storage>  요청 N회 (N requests)  평균 N초 (average N seconds)
-curl -s 127.0.0.1:3001/metrics | awk '
-/^shireguard_storage_request_seconds_(sum|count)/ {
-  match($0, /db="[a-z]+"/); d = substr($0, RSTART+4, RLENGTH-5)
-  if ($0 ~ /_sum/) s[d] = $2; else c[d] = $2
-}
-END { for (d in s) printf "%-10s 요청 %d회  평균 %.2f초\n", d, c[d], s[d]/c[d] }'
+# Example: check the overall throughput from taking events out of Kafka to storing them in the DB
+./monitor.sh 1
 ```
 
-```powershell
-# Rust Backend CPU (2-second interval, PowerShell)
-# It is the sum of per-core usage, so it can exceed 100% (e.g., 1600 if all 16 cores are used)
-while ($true) { (Get-Counter '\Process(backend)\% Processor Time').CounterSamples.CookedValue; Start-Sleep 2 }
-```
+| Option number | Content |
+|---|---|
+| 1 | Overall throughput from taking events out of Kafka to storing them in the DB |
+| 2 | Rust server CPU usage |
+| 3 | Number of events accumulated in Kafka, processing completion position (commit), number of events not yet committed (LAG) |
+| 4 | Average time for the DB (OpenSearch, ClickHouse) to process 1 Batch storage request (interval / cumulative) |
+| 5 | Docker container CPU / memory usage |
+| 6 | Write load received by OpenSearch (number of storage requests being processed concurrently, write memory usage, elapsed processing time per request) |

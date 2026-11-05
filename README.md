@@ -99,10 +99,14 @@ shire-guard/
 │   ├── notes/                   # 개발 당시 작성한 메모
 │   ├── samples/                 # 외부 API · AI 응답 원본 예시
 │   ├── API.md                   # API 명세
+│   ├── API.en.md                # API 명세 (영문)
 │   ├── DEMO.md                  # 시나리오별 시연 문서(영상 포함)
-│   └── DEVELOPMENT.md           # 개발 환경 · 실행 · 테스트 가이드
+│   ├── DEMO.en.md               # 시나리오별 시연 문서 (영문)
+│   ├── DEVELOPMENT.md           # 개발 환경 · 실행 · 테스트 가이드
+│   └── DEVELOPMENT.en.md        # 개발 환경 · 실행 · 테스트 가이드 (영문)
 ├── scripts/                     # 테스트 · 운영 도구 (부하 테스트, DB 성능 측정, 모니터링 등)
-└── README.md
+├── README.md
+└── README.en.md                 # README (영문)
 ```
 
 ---
