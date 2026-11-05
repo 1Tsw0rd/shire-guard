@@ -78,6 +78,13 @@ INSERT INTO playbooks (name, description, enabled, nodes) VALUES
 
 -- 다수결 테스트용 플레이북 샘플(기본 비활성)
 --
+-- 테스트 방법
+--   1. 기존 플레이북을 모두 끄고 [TEST-VOTE] 플레이북만 활성화 (Backend 시작 전에 실행)
+--        UPDATE playbooks SET enabled = (name LIKE '[TEST-VOTE]%');
+--   2. loadgen --votes 옵션으로 이벤트 전송
+--        예: ./loadgen.exe login_failure 40001 10 10 --case safe --votes D1,D2,H1
+--   3. Backend 실행
+--
 -- 테스트 이벤트 예시
 --   {
 --     "event_id": "evt-test-1",
