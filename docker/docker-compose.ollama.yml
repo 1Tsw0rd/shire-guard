@@ -4,7 +4,7 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
-    entrypoint: ["/bin/sh", "-c", "ollama serve & until ollama list > /dev/null 2>&1; do sleep 1; done; ollama run phi4:14b ''; ollama run gemma4:12b ''; wait"] # 서버 시작 후 모델 미리 올림
+    entrypoint: ["/bin/sh", "-c", "ollama serve & until ollama list > /dev/null 2>&1; do sleep 1; done; ollama run phi4:14b ''; ollama run gemma4:12b ''; wait"] # 서버 시작 후 모델 미리 올림 (순서 중요 phi4 → gemma4 반대로 올리면 gemma4가 VRAM에서 밀려나서 올라오지 않음)
     environment:
       - OLLAMA_HOST=0.0.0.0:${OLLAMA_PORT:?OLLAMA_PORT가 설정되지 않았습니다}
       - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:?OLLAMA_NUM_PARALLEL이 설정되지 않았습니다} # 모델 1개가 동시에 처리하는 요청 수
