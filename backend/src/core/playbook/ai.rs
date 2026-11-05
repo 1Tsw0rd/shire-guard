@@ -420,6 +420,16 @@ impl AiClient {
         // 모델별 설정 (테스트로 정한 값)
         // - gemma4: thinking 사용, Gemma 권장 샘플링 값
         // - phi4: thinking 미사용, temperature 0: 같은 입력에는 같은 답이 나오도록 무작위성을 제거 (완전한 결정성은 캐시로 보장)
+        //
+        // num_predict: 입력 및 출력 포함 요청당 최대 생성 토큰 수를 의미
+        //   한도에 도달하면 생성이 종료되며, 응답의 done_reason은 "length"가 됨
+        //
+        // docker-compose.ollama.yml의 OLLAMA_CONTEXT_LENGTH은 모델이 사용할 전체 컨텍스트 크기 (현재 4096)이며
+        // 입력 프롬프트와 생성 토큰이 모두 이 범위에 포함됨
+        // Context를 줄이면 KV Cache 메모리 사용량이 감소하여 여러 모델을 동시에 메모리에 올리는 데 유리함
+        //
+        // num_predict는 요청별 생성 상한이며 OLLAMA_CONTEXT_LENGTH와 별개로 적용됨
+        // 실제 생성 가능한 토큰 수는 두 제한 중 먼저 도달하는 조건에 의해 결정됨
         let (think, options) = match model {
             AiModel::Gemma4 => (
                 true,
