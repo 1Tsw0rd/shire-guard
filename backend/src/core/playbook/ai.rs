@@ -421,7 +421,7 @@ impl AiClient {
         // - gemma4: thinking 사용, Gemma 권장 샘플링 값
         // - phi4: thinking 미사용, temperature 0: 같은 입력에는 같은 답이 나오도록 무작위성을 제거 (완전한 결정성은 캐시로 보장)
         //
-        // num_predict: 입력 및 출력 포함 요청당 최대 생성 토큰 수를 의미
+        // num_predict: 요청당 최대 출력 토큰 수 (내부적으로 생각하는 과정에서 생성하는 thinking 토큰 포함, 입력은 미포함)
         //   한도에 도달하면 생성이 종료되며, 응답의 done_reason은 "length"가 됨
         //
         // docker-compose.ollama.yml의 OLLAMA_CONTEXT_LENGTH은 모델이 사용할 전체 컨텍스트 크기 (현재 4096)이며
