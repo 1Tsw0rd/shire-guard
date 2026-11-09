@@ -424,7 +424,7 @@ impl AiClient {
         // num_predict: 요청당 최대 출력 토큰 수 (내부적으로 생각하는 과정에서 생성하는 thinking 토큰 포함, 입력은 미포함)
         //   한도에 도달하면 생성이 종료되며, 응답의 done_reason은 "length"가 됨
         //
-        // docker-compose.ollama.yml의 OLLAMA_CONTEXT_LENGTH은 모델이 사용할 전체 컨텍스트 크기 (현재 4096)이며
+        // docker-compose.ollama.yml의 OLLAMA_CONTEXT_LENGTH는 요청 1건이 사용할 컨텍스트 크기 (현재 4096, 모델 메모리는 이 값 × OLLAMA_NUM_PARALLEL만큼 잡힘)이며
         // 입력 프롬프트와 생성 토큰이 모두 이 범위에 포함됨
         // Context를 줄이면 KV Cache 메모리 사용량이 감소하여 여러 모델을 동시에 메모리에 올리는 데 유리함
         //
@@ -451,7 +451,7 @@ impl AiClient {
                     "reason": { "type": "string" },
                     "risk": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] }
                 },
-                "required": ["reason", "risk"] // 응답 JSON에 reason와 risk 필드를 반드시 포함
+                "required": ["reason", "risk"] // 응답 JSON에 reason과 risk 필드를 반드시 포함
             },
             "think": think,
             "options": options,

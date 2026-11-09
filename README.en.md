@@ -1080,3 +1080,4 @@ sequenceDiagram
 - [ ] **Playbook create / update / delete API**: when a playbook create/update/delete occurs, replace the entire list of active playbooks with a write Lock (events being evaluated keep using the existing list, so processing does not stop)
 - [ ] **Query API**: support full query / conditional search of event logs and playbook logs in OpenSearch
 - [ ] **Report generation**: generate HWPX / DOCX reports with ClickHouse aggregation
+- [ ] **Research a dedicated queue for the AI response node**: Separate the processing of Playbook response nodes and AI response nodes to resolve bottlenecks caused by AI response delays and keep processing regular events
