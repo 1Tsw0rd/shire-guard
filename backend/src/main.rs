@@ -1,0 +1,211 @@
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+
+use axum::Router;
+use axum::extract::State; // Axum 익스트랙터: .with_state(state)로 넘긴 앱 전역 상태를 핸들러 인자로 꺼내 쓸 수 있게 해줌
+use axum::routing::get;
+use sqlx::postgres::PgPoolOptions;
+
+use backend::common::clients::clickhouse::ClickHouseClient;
+use backend::common::clients::opensearch::OpenSearchClient;
+use backend::common::clients::redis::RedisClient;
+use backend::common::error::AppError;
+use backend::common::fallback::not_found;
+use backend::common::metrics::Metrics;
+use backend::common::middleware::request_id_middleware;
+use backend::config::AppConfig;
+use backend::core::consumer::kafka::{self, ConsumerFailures, OffsetCommitter};
+use backend::core::consumer::offset::OffsetTracker;
+use backend::core::enrichment::providers::abuseipdb::AbuseIpDbProvider;
+use backend::core::enrichment::providers::dns::DnsProvider;
+use backend::core::enrichment::providers::virustotal::VirusTotalProvider;
+use backend::core::enrichment::service::EnrichmentService;
+use backend::core::playbook::ai::AiClient;
+use backend::core::playbook::engine::PlaybookEngine;
+use backend::core::playbook::store::PlaybookStore;
+use backend::core::storage::forwarder::{CHANNEL_CAPACITY, StorageForwarder};
+use backend::state::AppState;
+
+#[tokio::main]
+async fn main() {
+    // docker/.env: Docker 및 외부 시스템 접속 정보
+    // Kafka/RedPanda, OpenSearch, ClickHouse 등의 인프라 설정을 로드
+    dotenvy::from_filename("../docker/.env").ok();
+
+    // backend/.env: Rust 애플리케이션 전용 설정
+    // DATABASE_URL, RUST_LOG 및 이후 Rust에서만 사용하는 Secret을 로드
+    dotenvy::dotenv().ok();
+
+    let config = AppConfig::from_env().expect("설정 초기화 실패");
+
+    tracing_subscriber::fmt()
+        .pretty() // 가독성 있게 해줌
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env()) // 주입된 RUST_LOG 환경변수 값을 실제로 읽어서 모듈별 로그 레벨을 적용, 설정하지 않으면 tracing 기본 필터(ERROR 레벨)만 출력
+        .with_file(true) // 로그에 파일명 출력 활성화
+        .with_line_number(true) // 로그에 에러 발생 위치 출력 활성화
+        .init();
+
+    // PostgreSQL 연결
+    tracing::info!("[DB CONNECTING] PostgreSQL 서버에 연결 시도합니다...");
+    let postgres = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&config.database_url)
+        .await
+        .expect("PostgreSQL 연결 실패");
+    tracing::info!("[DB CONNECTED] PostgreSQL 서버 연결 성공");
+
+    // Redis/Dragonfly 연결 (Enrichment 캐시/분산 락 용도)
+    tracing::info!(
+        "[CACHE CONNECTING] {:?} 서버에 연결 시도합니다...",
+        config.cache.backend
+    );
+    let redis_raw =
+        redis::Client::open(config.cache.url.as_str()).expect("Redis/Dragonfly Client 생성 실패");
+    let redis = RedisClient::new(redis_raw)
+        .await
+        .expect("Redis/Dragonfly 연결 실패");
+    tracing::info!("[CACHE CONNECTED] {:?} 연결 성공", config.cache.backend);
+
+    let redis_for_metrics = redis.clone(); // Redis 연결 직후, Metrics용으로 clone
+    let redis_for_ai = redis.clone(); // Playbook AI 캐시용으로 clone (redis는 아래 EnrichmentService로 이동됨)
+
+    // Enrichment Provider 3개 생성
+    let dns_provider = DnsProvider::new(&config.dns_resolver_host, config.dns_resolver_port)
+        .expect("DNS Provider 초기화 실패");
+    let abuseipdb_provider = AbuseIpDbProvider::new(config.abuseipdb_api_key.clone());
+    let virustotal_provider = VirusTotalProvider::new(config.virustotal_api_key.clone());
+
+    let enrichment = Arc::new(EnrichmentService::new(
+        redis,
+        dns_provider,
+        abuseipdb_provider,
+        virustotal_provider,
+    ));
+
+    // Playbook Engine: 활성 Playbook 로드 + AI Client + 엔진 조립
+    // Postgres 접속/쿼리 실패는 fail-fast (개별 Playbook 파싱 실패는 store 안에서 건너뜀)
+    let playbook_store = PlaybookStore::load(&postgres)
+        .await
+        .expect("Playbook 로드 실패");
+    let ai_client = AiClient::new(
+        redis_for_ai,
+        config.ollama_base_url.clone(),
+        config.ollama_num_parallel,
+    )
+    .expect("AI Client 생성 실패");
+    let engine = Arc::new(PlaybookEngine::new(playbook_store, ai_client));
+
+    // Prometheus metrics 초기화 (config.broker 기준으로 active_broker 게이지 세팅)
+    let metrics =
+        Arc::new(Metrics::new(&config.broker, &config.cache).expect("metrics 초기화 실패"));
+
+    // Kafka/RedPanda Consumer 생성 + offset 추적기
+    // 추적기는 Consumer(rebalance 시 기록 삭제), 수신 루프(begin), 전달 Task(finish)가 함께 사용
+    let tracker = Arc::new(Mutex::new(OffsetTracker::new()));
+    let consumer = Arc::new(
+        kafka::build_consumer(&config.broker, metrics.clone(), tracker.clone())
+            .expect("Kafka Consumer 생성 실패"),
+    );
+    let committer = Arc::new(OffsetCommitter::new(
+        consumer.clone(),
+        tracker,
+        config.broker.topic.clone(),
+    ));
+    // 처리할 수 없는 메시지(빈 메시지, 역직렬화 실패 등)를 storage_failures에 보관한 뒤 완료 처리
+    let failures = Arc::new(ConsumerFailures::new(
+        postgres.clone(),
+        metrics.clone(),
+        committer.clone(),
+    ));
+
+    // 전달 Task: 처리가 끝난 로그를 Batch로 OpenSearch/ClickHouse에 저장
+    // Consumer 수신 루프보다 먼저 실행해서, 처리 Task가 넘기는 로그를 바로 받을 수 있게 함
+    let (storage_tx, storage_rx) = tokio::sync::mpsc::channel(CHANNEL_CAPACITY);
+
+    let opensearch =
+        OpenSearchClient::new(config.opensearch_url.clone()).expect("OpenSearch Client 생성 실패");
+    let clickhouse = ClickHouseClient::new(
+        config.clickhouse_url.clone(),
+        config.clickhouse_db.clone(),
+        config.clickhouse_user.clone(),
+        config.clickhouse_password.clone(),
+    )
+    .expect("ClickHouse Client 생성 실패");
+    // postgres는 아래 AppState로 이동되므로 clone (PgPool clone은 같은 커넥션 풀을 공유)
+    let forwarder = StorageForwarder::new(
+        opensearch,
+        clickhouse,
+        postgres.clone(),
+        metrics.clone(),
+        committer.clone(),
+    );
+
+    tokio::spawn(forwarder.run(storage_rx));
+
+    // Kafka/RedPanda 수신 루프를 백그라운드 태스크로 실행 (HTTP 서버와 별개로 계속 동작)
+    tokio::spawn(kafka::run(
+        consumer,
+        committer,
+        failures,
+        metrics.clone(),
+        enrichment.clone(),
+        engine,
+        storage_tx,
+    ));
+
+    // Redis/Dragonfly Key 개수 반환 매트릭(15초 주기)
+    // 조회 실패 후 다시 성공하면 연결 복구 로그를 남김
+    {
+        let metrics = metrics.clone();
+        let cache_backend = config.cache.backend;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            let mut connected = true; // 시작할 때 연결에 성공했으므로 true로 시작
+            loop {
+                interval.tick().await;
+                match redis_for_metrics.dbsize().await {
+                    Ok(count) => {
+                        metrics.cache_key_count.set(count);
+                        if !connected {
+                            tracing::info!("[CACHE RECONNECTED] {:?} 연결 복구됨", cache_backend);
+                            connected = true;
+                        }
+                    }
+                    Err(err) => {
+                        connected = false;
+                        tracing::warn!(error = ?err, "캐시 키 개수 조회 실패");
+                    }
+                }
+            }
+        });
+    }
+
+    // Axum HTTP 서버 구성 및 실행
+    let state = Arc::new(AppState {
+        postgres,
+        metrics,
+        enrichment,
+    });
+
+    let app = Router::new()
+        .route("/health", get(health_check))
+        .route("/metrics", get(metrics_handler))
+        .fallback(not_found)
+        .layer(axum::middleware::from_fn(request_id_middleware))
+        .with_state(state);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3001));
+
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    tracing::info!("[SERVER RUNNING] http://{}", addr);
+
+    axum::serve(listener, app).await.unwrap();
+}
+
+async fn health_check() -> &'static str {
+    "ok"
+}
+
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> Result<String, AppError> {
+    state.metrics.encode()
+}

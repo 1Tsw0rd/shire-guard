@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO storage_failures (log_id, reason, payload, kafka_partition, kafka_offset)\n        SELECT log_id, reason, payload, kafka_partition, kafka_offset\n        FROM UNNEST($1::text[], $2::text[], $3::bytea[], $4::int4[], $5::int8[])\n            AS t(log_id, reason, payload, kafka_partition, kafka_offset)\n        ON CONFLICT (log_id) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "ByteaArray",
+        "Int4Array",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9675819f2badd2a14c59c30e572270973fc8e63a4a941788176e7e5aca4e5fbb"
+}

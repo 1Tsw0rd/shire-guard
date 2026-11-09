@@ -1,0 +1,27 @@
+# docker compose -f docker-compose.yml  -f docker-compose.dragonfly.yml up -d dragonfly
+services:
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    container_name: dragonfly
+    restart: unless-stopped
+    ulimits:
+      memlock: -1 # 프로세스의 메모리 잠금(memlock) 제한 설정, -1은 무제한, 바이트 단위
+    ports:
+      - "${DRAGONFLY_PORT:?DRAGONFLY_PORT가 설정되지 않았습니다}:6379"
+    # 재시작 시 데이터를 유지하고 싶은 경우 아래 volumes 활성화
+    # volumes:
+    #   - ./docker/dragonfly/data:/data
+    # 재시작 시 데이터를 초기화하고 싶다면 아래 tmpfs 활성화
+    tmpfs:
+      - /data
+    command:
+      [
+        "--requirepass=${DRAGONFLY_PASSWORD:?DRAGONFLY_PASSWORD가 설정되지 않았습니다}"
+      ]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${DRAGONFLY_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shire-net

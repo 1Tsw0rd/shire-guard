@@ -1,0 +1,126 @@
+groups:
+  - name: shire-guard-alerts
+    interval: 30s
+    rules:
+      - alert: Service Down
+        for: 1m
+        expr: |
+          (up{job=~"backend|vector|prometheus|cadvisor"} == 0)
+          or
+          (up{job="kafka"} == 0 and on() (shireguard_config_active_broker{broker="kafka"} == 1))
+          or
+          (up{job="redpanda"} == 0 and on() (shireguard_config_active_broker{broker="redpanda"} == 1))
+
+      - alert: Vector to Broker Silent Failure
+        for: 1m
+        expr: |
+          (
+            sum(rate(vector_component_received_events_total{component_id="http_in"}[1m])) > 0
+          )
+          and
+          (
+            (
+              (
+                sum(rate(vector_component_sent_events_total{component_id="kafka_out"}[1m]))
+                and on() (shireguard_config_active_broker{broker="kafka"} == 1)
+              )
+              or
+              (
+                sum(rate(vector_component_sent_events_total{component_id="redpanda_out"}[1m]))
+                and on() (shireguard_config_active_broker{broker="redpanda"} == 1)
+              )
+              or vector(0)
+            ) == 0
+          )
+
+      - alert: Broker to Rust Silent Failure
+        for: 1m
+        expr: |
+          (
+            (
+              (
+                sum(rate(kafka_server_brokertopicmetrics_messagesinpersec_topic{topic="test_topic"}[1m]))
+                and on() (shireguard_config_active_broker{broker="kafka"} == 1)
+              )
+              or
+              (
+                sum(rate(redpanda_kafka_records_produced_total{redpanda_namespace="kafka", redpanda_topic="test_topic"}[1m]))
+                and on() (shireguard_config_active_broker{broker="redpanda"} == 1)
+              )
+              or vector(0)
+            ) > 0
+          )
+          and
+          (
+            sum(rate(shireguard_consumer_messages_received_total[1m])) == 0
+          )
+
+      - alert: Pipeline Flow Degraded
+        for: 1m
+        expr: |
+          (
+            sum(rate(vector_component_received_events_total{component_id="http_in"}[1m])) > 0
+          )
+          and
+          (
+            (
+              (
+                (
+                  sum(rate(vector_component_sent_events_total{component_id="kafka_out"}[1m]))
+                  and on() (shireguard_config_active_broker{broker="kafka"} == 1)
+                )
+                or
+                (
+                  sum(rate(vector_component_sent_events_total{component_id="redpanda_out"}[1m]))
+                  and on() (shireguard_config_active_broker{broker="redpanda"} == 1)
+                )
+                or vector(0)
+              ) == 0
+            )
+            or
+            (
+              (
+                (
+                  sum(rate(kafka_server_brokertopicmetrics_messagesinpersec_topic{topic="test_topic"}[1m]))
+                  and on() (shireguard_config_active_broker{broker="kafka"} == 1)
+                )
+                or
+                (
+                  sum(rate(redpanda_kafka_records_produced_total{redpanda_namespace="kafka", redpanda_topic="test_topic"}[1m]))
+                  and on() (shireguard_config_active_broker{broker="redpanda"} == 1)
+                )
+                or vector(0)
+              ) == 0
+            )
+            or
+            (
+              sum(rate(shireguard_consumer_messages_received_total[1m])) == 0
+            )
+          )
+
+      - alert: Vector Sink 확인해보세요
+        for: 1m
+        expr: |
+          label_replace(
+            (increase(vector_component_received_events_total{component_id="kafka_out"}[1m]) == 0)
+            and on() (increase(vector_component_sent_events_total{component_id="http_in"}[1m]) > 0),
+            "component_id", "kafka_out", "", ""
+          )
+          or
+          label_replace(
+            (increase(vector_component_received_events_total{component_id="redpanda_out"}[1m]) == 0)
+            and on() (increase(vector_component_sent_events_total{component_id="http_in"}[1m]) > 0),
+            "component_id", "redpanda_out", "", ""
+          )
+          or
+          label_replace(
+            (increase(vector_component_received_events_total{component_id="opensearch_out"}[1m]) == 0)
+            and on() (increase(vector_component_sent_events_total{component_id="http_in"}[1m]) > 0),
+            "component_id", "opensearch_out", "", ""
+          )
+          or
+          label_replace(
+            (increase(vector_component_received_events_total{component_id="clickhouse_out"}[1m]) == 0)
+            and on() (increase(vector_component_sent_events_total{component_id="http_in"}[1m]) > 0),
+            "component_id", "clickhouse_out", "", ""
+          )

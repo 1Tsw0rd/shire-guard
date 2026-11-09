@@ -1,0 +1,68 @@
+# docker compose -f docker-compose.yml  -f docker-compose.opensearch.yml up -d opensearch opensearch-dashboards opensearch-init
+services:
+  opensearch:
+    image: opensearchproject/opensearch:latest
+    container_name: opensearch
+    restart: unless-stopped
+    ports:
+      - "${OPENSEARCH_PORT:?OPENSEARCH_PORT가 설정되지 않았습니다}:9200"  # REST API 포트
+      - "${OPENSEARCH_PERF_PORT:?OPENSEARCH_PERF_PORT가 설정되지 않았습니다}:9600"  # 성능 분석 API 포트
+    environment:
+      - discovery.type=single-node        # 단일 노드 모드 (클러스터 아님)
+      - plugins.security.disabled=true    # 로컬 개발용, 인증/TLS 비활성화
+      - OPENSEARCH_JAVA_OPTS=-Xms8g -Xmx8g  # JVM 힙 메모리 제한 (샤드 4 기준, 단독 테스트: 4GB에서 10만/s 이상 측정됨, Rust 포함 종합 테스트: 4GB 약 7.7만/s -> 8GB 약 11.2만/s, 16GB는 개선 없음)  
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:?OPENSEARCH_INITIAL_ADMIN_PASSWORD가 설정되지 않았습니다} # 초기 admin 비밀번호(docker/.env 참조)
+    volumes:
+      - ./opensearch/data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - shire-net
+  
+  # opensearch init 서비스
+  opensearch-init:
+    image: opensearchproject/opensearch:latest # opensearch와 같은 이미지 사용
+    container_name: opensearch-init
+    restart: "no" # 1회 실행 후 종료
+    entrypoint:
+      - curl
+      - -fsS # -f: HTTP 오류이면 컨테이너 실패 처리, -s: 진행률 숨김, -S: 에러메시지 출력
+      - -X # HTTP 메서드 지정
+      - PUT
+      - http://opensearch:9200/_index_template/event-logs # event_logs 템플릿 생성
+      - -H # Request Header 지정
+      - "Content-Type: application/json" # Body는 Json
+      - --data-binary # 파일 내용 가공하지 않고 전송
+      - "@/templates/event-logs.json" # @는 파일에서 읽으라는 뜻(컨테이너 내부 경로)
+    volumes:
+      - ./opensearch/templates:/templates:ro     # docker/opensearch/templates/event-logs.json
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks:
+      - shire-net
+      
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:latest
+    container_name: opensearch-dashboards
+    restart: unless-stopped
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9200"]   # 연결할 OpenSearch 주소 (서비스명 사용)
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true         # OpenSearch 쪽 보안이 꺼져있으므로 대시보드 쪽도 맞춰서 비활성화
+    ports:
+      - "${OPENSEARCH_DASHBOARDS_PORT:?OPENSEARCH_DASHBOARDS_PORT가 설정되지 않았습니다}:5601" # 대시보드 웹 UI 포트  
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5601/api/status || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - shire-net
+    depends_on:
+      opensearch:
+        condition: service_healthy    # opensearch가 먼저 뜬 뒤에 시작

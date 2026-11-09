@@ -1,0 +1,20 @@
+# docker compose -f docker-compose.yml -f docker-compose.loki.yml up -d loki
+services:
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "${LOKI_PORT:?LOKI_PORT가 설정되지 않았습니다}:3100"
+    volumes:
+      - ./loki/config:/etc/loki
+      - ./loki/data:/loki
+    healthcheck:
+      test: [ "CMD", "/usr/bin/loki", "-health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - shire-net
