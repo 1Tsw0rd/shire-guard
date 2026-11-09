@@ -31,11 +31,11 @@ docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d ollama
 
 ### 1-2. 모델 pull
 
-Qwen2.5-14B, Foundation-Sec-8B 두 모델을 설치한다.
+Gemma4 12B, Phi-4 14B 두 모델을 설치한다.
 
 ```bash
-docker exec -it ollama ollama pull qwen2.5:14b-instruct
-docker exec -it ollama ollama pull hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF
+docker exec -it ollama ollama pull gemma4:12b
+docker exec -it ollama ollama pull phi4:14b
 ```
 
 ### 1-3. 설치된 모델 목록 확인
@@ -50,10 +50,9 @@ docker exec -it ollama ollama list
 
 ```bash
 curl http://localhost:11434/api/chat -d '{
-  "model": "qwen2.5:14b-instruct",
+  "model": "gemma4:12b",
   "messages": [{"role": "user", "content": "..."}],
-  "stream": false,
-  "keep_alive": "30m"
+  "stream": false
 }'
 ```
 
@@ -64,14 +63,13 @@ curl http://localhost:11434/api/chat -d '{
 | `model` | 호출할 모델 이름. 설치된 2개 모델 중 하나를 지정 |
 | `messages` | 대화 내용을 배열로 전달. `role`(발화자)과 `content`(내용)로 구성 |
 | `stream` | 응답을 실시간 스트리밍할지 여부. `false`면 전체 응답 완성 후 한 번에 반환 |
-| `keep_alive` | 응답 후 모델을 GPU 메모리에 유지할 시간. `"30m"`이면 재요청 시 재로딩 없이 즉시 응답 |
 
 **모델 지정값**
 
 | 모델 | `model` 값 |
 |---|---|
-| Qwen2.5-14B | `qwen2.5:14b-instruct` |
-| Foundation-Sec-8B | `hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF` |
+| Gemma 4 12B| `gemma4:12b` |
+| Phi-4 14B | `phi4:14b` |
 
 **`role` 종류**
 

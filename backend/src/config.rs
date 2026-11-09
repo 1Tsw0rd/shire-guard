@@ -55,6 +55,8 @@ pub struct AppConfig {
 
     // Playbook AI (Ollama)
     pub ollama_base_url: String,
+    pub ollama_num_parallel: usize,
+
     // 이벤트 로그 저장소
     pub opensearch_url: String,
     pub clickhouse_url: String,
@@ -105,6 +107,22 @@ impl AppConfig {
                     AppError::Internal("OLLAMA_PORT 환경변수가 설정되지 않았습니다.".into())
                 })?;
                 format!("http://localhost:{port}")
+            },
+
+            ollama_num_parallel: {
+                let value = std::env::var("OLLAMA_NUM_PARALLEL").map_err(|_| {
+                    AppError::Internal("OLLAMA_NUM_PARALLEL 환경변수가 설정되지 않았습니다.".into())
+                })?;
+                let parsed = value.parse::<usize>().map_err(|_| {
+                    AppError::Internal("OLLAMA_NUM_PARALLEL은 올바른 정수여야 합니다.".into())
+                })?;
+                // 0이면 Semaphore permit이 없어 모든 AI 요청이 timeout까지 대기하므로 시작 시 차단
+                if parsed == 0 {
+                    return Err(AppError::Internal(
+                        "OLLAMA_NUM_PARALLEL은 1 이상이어야 합니다.".into(),
+                    ));
+                }
+                parsed
             },
 
             // Rust는 호스트에서 실행되므로 OpenSearch/ClickHouse는 localhost의 매핑된 포트로 접속

@@ -51,7 +51,7 @@ OpenSearch + ClickHouse
 | **조건 평가**               | Playbook 내부 Condition은 `AND`, Condition 내부는 `AND / OR` 중첩 가능 |
 | **종료 노드**               | `Response` 또는 `AI Response` 정확히 1개                           |
 | **Action**              | `DENY` / `DETECT` / `HOLD`                                   |
-| **AI 처리** | Redis/Dragonfly 조회 → 없으면 Ollama 호출(같은 요청 1회, 동시 1개) → 성공 시 TTL 캐시 / 캐시 장애 시 Ollama 호출 없이 에러(→ HOLD) |
+| **AI 처리** | Redis/Dragonfly 조회 → 없으면 Ollama 호출(같은 요청 1회, 동시 OLLAMA_NUM_PARALLEL개) → 성공 시 TTL 캐시 / 캐시 장애 시 Ollama 호출 없이 에러(→ HOLD) |
 | **최종 결정**               | 특정 Action이 전체 결과의 **50% 초과** 시 해당 Action                     |
 | **과반수 없음**              | `HOLD`                                                       |
 | **조건을 만족한 Playbook 없음** | 원본 이벤트 그대로 저장 (`playbook_result` 없음)                         |
@@ -201,7 +201,7 @@ PUT _index_template/event-logs
                 "status": { "type": "keyword" },                         // success | error
                 "risk":   { "type": "keyword" },                         // HIGH | MEDIUM | LOW (success 시)
                 "reason": { "type": "keyword", "ignore_above": 4096 },   // 판단 근거 (success 시)
-                "error":  { "type": "keyword" },                         // timeout | connection_failed | http_error | invalid_response | cache_unavailable (error 시)
+                "error":  { "type": "keyword" },                         // timeout | connection_failed | http_error | invalid_response | cache_unavailable | output_limit_exceeded (error 시)
                 "model":  { "type": "keyword" }                          // 사용한 모델
               } }
             }
@@ -255,9 +255,9 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
 - AI 대응 노드: Redis/Dragonfly에서 ai 분석 결과 조회
   - 있으면 사용하고,
   - Redis/Dragonfly 조회 장애면 Ollama를 호출하지 않고 cache_unavailable 에러 반환
-  - 없으면 Ollama 호출 (캐시 키가 같은 요청은 1번만 호출, 동시 호출 1개로 제한) 후 정상 응답만 7일 저장
-  - 요청 하나의 전체 시간 상한 60초, 초과 시 timeout 에러
-  - 키: `sha256(model + prompt + Evidence(원본 + enrichment 결과), event_id·timestamp·ingested_at 제외)`
+  - 없으면 Ollama 호출 (캐시 키가 같은 요청은 1번만 호출, 동시 호출 `OLLAMA_NUM_PARALLEL`개로 제한) 후 정상 응답만 7일 저장
+  - 요청 하나의 전체 시간 상한 300초, 초과 시 timeout 에러
+  - 키: `sha256(공통 프롬프트 + model + prompt + Evidence(원본 + enrichment 결과), event_id·timestamp·ingested_at 제외)`
 
 ### 4) 최종적으로 OpenSearch와 ClickHouse에 저장되는 로그
 - 결정한 플레이북이 없는 경우: 원본 로그
@@ -361,14 +361,14 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
   - AI 에러 발생 시 매핑과 무관하게 HOLD 처리
   - 매핑값: DENY | HOLD | DETECT
 
-- 입력: prompt는 system 메시지로, Evidence(원본 + enrichment, event_id·timestamp·ingested_at 제외)는 user 메시지로 전달
-- temperature 0 적용 (같은 입력에는 같은 답이 나오도록 함)
+- 입력: 공통 프롬프트(`COMMON_SYSTEM_PROMPT`)는 system 메시지로, [요청 사항](prompt) + [이벤트](Evidence)는 user 메시지로 전달
+- 모델별 설정: gemma4는 thinking 사용 · temperature 1.0, phi4는 thinking 미사용 · temperature 0
 - model은 호출할 모델(AiModel enum, 허용 목록 2개)을 지정하는 값임
 - actions 매핑은 모델에 전달하지 않음
 ```json
 {
   "type": "ai_response",
-  "model": "qwen2.5:14b-instruct",
+  "model": "gemma4:12b",
   "prompt": "보안 이벤트와 enrichment 결과를 분석하고 위험도를 판단하라.",
   "actions": {
     "HIGH": "HOLD",
@@ -384,19 +384,19 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
 "ai_result": {
   "status": "success",
   "risk": "HIGH",
-  "reason": "파일의 악성 탐지 비율이 높고 관련 IOC의 위험도가 높게 확인되었습니다.",
-  "model": "qwen2.5:14b-instruct"
+  "reason": "확인된 사실: 파일 해시가 VirusTotal에서 3개 엔진에 의해 악성으로 탐지됨. 분석 결과: … 권고 조치: …",
+  "model": "gemma4:12b"
 }
 ```
 
 실패
-- `error` 값은 `timeout | connection_failed | http_error | invalid_response | cache_unavailable`로 고정
+- `error` 값은 `timeout | connection_failed | http_error | invalid_response | cache_unavailable | output_limit_exceeded`로 고정
 - 에러 시 `risk`, `reason` 필드는 포함하지 않음
 
 ```json
-"ai_result": { "status": "error", "error": "timeout", "model": "qwen2.5:14b-instruct" }
+"ai_result": { "status": "error", "error": "timeout", "model": "gemma4:12b" }
 
-"ai_result": { "status": "error", "error": "cache_unavailable", "model": "qwen2.5:14b-instruct" }
+"ai_result": { "status": "error", "error": "cache_unavailable", "model": "gemma4:12b" }
 ```
 
 ## 3. action 종류
@@ -425,7 +425,7 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
         "status": String,      // success | error
         "risk": String,        // HIGH | MEDIUM | LOW (성공 시)
         "reason": String,      // 판단 근거 (성공 시)
-        "error": String,       // 에러 원인 (에러 시): timeout | connection_failed | http_error | invalid_response | cache_unavailable
+        "error": String,       // 에러 원인 (에러 시): timeout | connection_failed | http_error | invalid_response | cache_unavailable | output_limit_exceeded
         "model": String        // 사용한 모델
       }
     }
@@ -459,8 +459,8 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
       "ai_result": {
         "status": "success",
         "risk": "MEDIUM",
-        "reason": "파일의 악성 탐지 비율이 높고 관련 IOC의 위험도가 높게 확인되었습니다.",
-        "model": "qwen2.5:14b-instruct"
+        "reason": "확인된 사실: 파일 해시가 VirusTotal에서 3개 엔진에 의해 악성으로 탐지됨. 분석 결과: … 권고 조치: …",
+        "model": "gemma4:12b"
       }
     },
     {
@@ -478,7 +478,7 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
         "status": "success",
         "risk": "LOW",
         "reason": "...",
-        "model": "qwen2.5:14b-instruct"
+        "model": "gemma4:12b"
       }
     }
   ]
@@ -560,7 +560,7 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
     },
     {
       "type": "ai_response",
-      "model": "qwen2.5:14b-instruct",
+      "model": "gemma4:12b",
       "prompt": "보안 이벤트와 enrichment 결과를 분석하고 위험도를 판단하라.",
       "actions": {
         "HIGH": "HOLD",
@@ -587,8 +587,8 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
       "ai_result": {
         "status": "success",
         "risk": "MEDIUM",
-        "reason": "파일의 악성 탐지 비율이 높고 관련 IOC의 위험도가 높게 확인되었습니다.",
-        "model": "qwen2.5:14b-instruct"
+        "reason": "확인된 사실: 파일 해시가 VirusTotal에서 3개 엔진에 의해 악성으로 탐지됨. 분석 결과: … 권고 조치: …",
+        "model": "gemma4:12b"
       }
     }
   ]
@@ -676,8 +676,8 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
       "ai_result": {
         "status": "success",
         "risk": "HIGH",
-        "reason": "파일의 악성 탐지 비율이 높고 관련 IOC의 위험도가 높게 확인되었습니다.",
-        "model": "qwen2.5:14b-instruct"
+        "reason": "확인된 사실: 파일 해시가 VirusTotal에서 3개 엔진에 의해 악성으로 탐지됨. 분석 결과: … 권고 조치: …",
+        "model": "gemma4:12b"
       }
     },
     {
@@ -711,7 +711,7 @@ SETTINGS min_bytes_for_wide_part = 268435456;         -- min_bytes_for_wide_part
       "ai_result": {
         "status": "error",
         "error": "timeout",
-        "model": "qwen2.5:14b-instruct"
+        "model": "gemma4:12b"
       }
     }
   ]

@@ -36,6 +36,24 @@ const SAFE_DOMAIN: &str = "nexon.com";
 // file_download의 다운로드 출처 도메인 (실제로 존재하지 않는 도메인이라 DNS 조회 결과는 항상 NotFound)
 const DOWNLOAD_DOMAIN: &str = "cdn-update-service.net";
 
+// ── ai 명령 전용 IOC 값 ─────────────────────────────────────
+// VirusTotal 악성 판정 3개 / 1개 해시 (조사 당시 값이며, VirusTotal 재분석으로 판정 수가 바뀔 수 있음)
+// VirusTotal 무료 API 한도(분당 4건) 안에서 첫 조회가 끝나도록 ai 명령은 해시 3개(이 2개 + EICAR)만 사용
+const AMBIGUOUS_SHA256_3: &str = "784c88f2297ffe774b9b1330f12690d59f9d08ce89e97a74debd687de9ed2cd7";
+const AMBIGUOUS_SHA256_1: &str = "1dce02aae98c0a48c2644abd1849fb90406296d4e0c95e239f95242ee8480ff8";
+
+// email_attachment의 링크 도메인 (.example은 테스트용 예약 도메인이라 DNS 조회 결과는 항상 NotFound)
+const LINK_DOMAIN: &str = "invoice-share.example";
+
+// ai 명령으로 보낼 수 있는 건수 (파싱 실패 이벤트 포함)
+const AI_COUNTS: [u64; 2] = [1_000_000, 5_000_000];
+
+// ai 명령에서 파싱 실패 이벤트의 비율 (%)
+const AI_FAILURE_PERCENT: u64 = 1;
+
+// ai 명령 사용법 (인자가 잘못되면 출력)
+const AI_USAGE: &str = "사용법: ./loadgen.exe ai <START_ID> <COUNT> [PARALLEL]  (COUNT: 1000000 또는 5000000, PARALLEL 기본값 100)";
+
 // event_id / loadgen_id 앞에 붙는 값 (실제 로그와 섞여도 테스트 이벤트를 구분하기 위함)
 const ID_PREFIX: &str = "loadgen";
 
@@ -67,6 +85,13 @@ const HELP_EXTRA: &str = "\
    setup              질문에 답하며 이벤트 종류 / 건수 / 동시성 등을 설정하고 실행 (여러 이벤트 타입을 섞어서 전송 가능)
    check              저장소별 결과 확인 방법 출력 (웹 주소, 확인 명령), 기대값은 전송 후 출력되는 값과 비교
 
+ [ AI 대응 노드 테스트 ] ./loadgen.exe ai START_ID COUNT [PARALLEL]
+   COUNT              1000000 또는 5000000 (파싱 실패 이벤트 약 1% 포함)
+    - 1000000         AI 단일 판정 5종 약 49.5만 + AI 다수결 1종 약 9.9만 + 판정 없음 4종 약 39.6만 + 파싱 실패 약 1만
+    - 5000000         AI 단일 판정 5종 약 247.5만 + AI 다수결 1종 약 49.5만 + 판정 없음 4종 약 198만 + 파싱 실패 약 5만
+   PARALLEL           동시성 (기본값 100)
+
+
  [ 이벤트 타입 ]
    file_download      파일 다운로드
    login_failure      로그인 실패
@@ -86,9 +111,10 @@ const HELP_EXTRA: &str = "\
                       event_id는 loadgen-reject-<번호>, OpenSearch / ClickHouse에는 저장 안 됨
 
  [ 다수결 테스트 ] --votes
-   --votes D1,D2,H1   test_votes 필드 추가 → 다수결 테스트용 플레이북([TEST] D1~T2)이 자기 이름이 포함되면 판정
+   --votes D1,D2,H1   test_votes 필드 추가 → 다수결 테스트용 플레이북([TEST-VOTE] D1~T2)이 자기 이름이 포함되면 판정
                       D1, D2 → DENY  /  H1, H2 → HOLD  /  T1, T2 → DETECT
                       다른 플레이북이 함께 판정하지 않도록 login_failure --case safe로 전송
+                      (기본 비활성, --votes 테스트 시 활성화 필요)
 
  [ 반복 ] --reps, --cooldown
    --reps N           같은 설정을 N회 반복해 평균을 냄 (회차마다 event_id 번호는 이어서 증가)
@@ -120,6 +146,9 @@ const HELP_EXTRA: &str = "\
 
    # 자세한 출력: file_download / 위험 / 총 15000건 / 동시성 1000
    ./loadgen.exe file_download 60001 15000 1000 -v
+
+   # AI 대응 노드 테스트: 총 1000000건 (파싱 실패 약 1% 포함) / 동시성 1000
+   ./loadgen.exe ai 1 1000000 1000
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  [ 참고 ]
@@ -170,11 +199,13 @@ impl Case {
 // Normal: 정상적으로 처리되는 이벤트 (event_id 있음)
 // Failure: Backend에서 파싱에 실패하도록 만든 이벤트 (event_id 없음)
 // Reject: OpenSearch가 저장을 거부하도록 만든 이벤트 (객체 필드에 문자열)
+// Ai: AI 대응 노드 테스트 이벤트 (10종 이벤트와 파싱 실패 이벤트를 번호 해시로 섞음, ai 명령 전용)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Normal(EventType),
     Failure,
     Reject,
+    Ai,
 }
 
 // 보낼 이벤트 묶음 1개: 어떤 이벤트를, 어떤 케이스로, 몇 건 보낼지
@@ -194,15 +225,25 @@ impl EventSpec {
             Kind::Normal(t) => t.as_str().to_string(),
             Kind::Failure => "실패 이벤트 (event_id 없음)".to_string(),
             Kind::Reject => format!("거부 이벤트 ({REJECT_FIELD}에 문자열)"),
+            Kind::Ai => format!(
+                "ai (AI 대응 노드 테스트: 10종 이벤트 + 파싱 실패 약 {AI_FAILURE_PERCENT}%)"
+            ),
         };
         let votes = match &self.votes {
             Some(v) => format!(" / 다수결 {v}"),
             None => String::new(),
         };
         // 실패/거부 이벤트는 저장되지 않으므로 케이스를 표시하지 않음
+        // ai는 이벤트마다 IOC가 정해져 있으므로 케이스를 표시하지 않음
         match self.kind {
-            Kind::Normal(_) => format!("{name} / {} / {}건{votes}", self.case.label(), with_commas(self.count)),
-            Kind::Failure | Kind::Reject => format!("{name} / {}건", with_commas(self.count)),
+            Kind::Normal(_) => format!(
+                "{name} / {} / {}건{votes}",
+                self.case.label(),
+                with_commas(self.count)
+            ),
+            Kind::Failure | Kind::Reject | Kind::Ai => {
+                format!("{name} / {}건", with_commas(self.count))
+            }
         }
     }
 }
@@ -294,6 +335,7 @@ impl RunConfig {
                 Kind::Normal(t) => t.as_str(),
                 Kind::Failure => "fail",
                 Kind::Reject => "reject",
+                Kind::Ai => "ai",
             })
             .collect::<Vec<_>>()
             .join("+")
@@ -361,13 +403,229 @@ fn base_fields(event_type: EventType, case: Case) -> Value {
     }
 }
 
+// ── ai 명령: AI 대응 노드 테스트 이벤트 ─────────────────────────────────────
+
+// AI 테스트 이벤트의 판정 구분
+// Single: AI 플레이북 1개가 판정 (evaluated 1)
+// Majority: AI 플레이북 3개가 판정하고 다수결 (evaluated 3)
+// Pass: 걸리는 플레이북이 없음 (판정 없음)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AiCategory {
+    Single,
+    Majority,
+    Pass,
+}
+
+// AI 테스트 이벤트 1종
+// test_ai: [TEST-AI] 플레이북 코드 목록 (플레이북은 자기 코드가 포함되면 AI 대응 노드 실행)
+struct AiEvent {
+    event_type: &'static str,
+    test_ai: &'static str,
+    category: AiCategory,
+}
+
+// AI 테스트 이벤트 10종 (docker/postgres/init/002_seed.sql의 [TEST-AI] 플레이북 기준)
+// G1 ~ G4: gemma4, P1 ~ P4: phi4
+// 같은 종류의 이벤트는 AI에 전달되는 내용이 같으므로(event_id/timestamp/ingested_at 제외) AI 캐시 키는 플레이북 8개 x 1종 = 8개
+const AI_EVENTS: [AiEvent; 10] = [
+    AiEvent {
+        event_type: "file_download",
+        test_ai: "G1",
+        category: AiCategory::Single,
+    },
+    AiEvent {
+        event_type: "process_execution",
+        test_ai: "G2",
+        category: AiCategory::Single,
+    },
+    AiEvent {
+        event_type: "email_attachment",
+        test_ai: "G3",
+        category: AiCategory::Single,
+    },
+    AiEvent {
+        event_type: "login_failure",
+        test_ai: "P1",
+        category: AiCategory::Single,
+    },
+    AiEvent {
+        event_type: "port_scan",
+        test_ai: "P2",
+        category: AiCategory::Single,
+    },
+    AiEvent {
+        event_type: "privilege_escalation",
+        test_ai: "G4,P3,P4",
+        category: AiCategory::Majority,
+    },
+    AiEvent {
+        event_type: "login_success",
+        test_ai: "NONE",
+        category: AiCategory::Pass,
+    },
+    AiEvent {
+        event_type: "vpn_disconnect",
+        test_ai: "NONE",
+        category: AiCategory::Pass,
+    },
+    AiEvent {
+        event_type: "password_change",
+        test_ai: "NONE",
+        category: AiCategory::Pass,
+    },
+    AiEvent {
+        event_type: "software_update",
+        test_ai: "NONE",
+        category: AiCategory::Pass,
+    },
+];
+
+// 번호마다 보낼 이벤트 (파싱 실패 이벤트 또는 AI_EVENTS의 index)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AiPick {
+    Failure,
+    Event(usize),
+}
+
+// 번호를 해시해서 보낼 이벤트를 정함
+// - 번호 순서대로 종류를 돌리지 않고 해시값으로 정하므로 전송 순서가 뒤섞임
+// - 같은 번호면 항상 같은 이벤트라 재현 가능하고, 실행 전에 종류별 기대 건수를 정확히 계산할 수 있음
+// - 해시의 아래쪽 값으로 파싱 실패 여부(약 AI_FAILURE_PERCENT%)를, 위쪽 32비트로 10종 중 하나를 정함
+fn ai_pick(number: u64) -> AiPick {
+    let hash = splitmix64(number);
+    if hash % 100 < AI_FAILURE_PERCENT {
+        AiPick::Failure
+    } else {
+        AiPick::Event(((hash >> 32) % AI_EVENTS.len() as u64) as usize)
+    }
+}
+
+// SplitMix64: 입력 숫자를 고르게 퍼진 64비트 값으로 바꾸는 간단한 해시 (연속된 번호도 결과가 크게 달라짐)
+fn splitmix64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+// AI 테스트 이벤트 1종의 필드 (event_type, timestamp를 앞에 두고 마지막에 test_ai를 붙임)
+// 필드 이름은 보안 장비가 보내는 원본 형식 (source_ip, destination_domain은 Vector가 src_ip, dst_domain으로 바꿈)
+fn ai_event_fields(index: usize, timestamp: &str) -> Value {
+    let event = &AI_EVENTS[index];
+    let fields = match index {
+        // G1: 안전 IP + 존재하지 않는 다운로드 도메인 + 악성 3개 해시
+        0 => json!({
+            "source_ip": SAFE_IP,
+            "destination_domain": DOWNLOAD_DOMAIN,
+            "file_name": "setup_helper.exe",
+            "file_sha256": AMBIGUOUS_SHA256_3,
+            "file_size_bytes": 512000
+        }),
+        // G2: IP 없음 + 악성 1개 해시
+        1 => json!({
+            "hostname": "WKS-2041",
+            "user": "kim",
+            "process_name": "update_agent.exe",
+            "parent_process": "winword.exe",
+            "file_sha256": AMBIGUOUS_SHA256_1
+        }),
+        // G3: 위험 IP + 존재하지 않는 링크 도메인 (해시 없음)
+        2 => json!({
+            "source_ip": MALICIOUS_IP,
+            "sender": "billing@partner-mail.example",
+            "destination_domain": LINK_DOMAIN,
+            "file_name": "invoice_2026.zip"
+        }),
+        // P1: 위험 IP
+        3 => json!({
+            "source_ip": MALICIOUS_IP,
+            "username": "admin",
+            "attempt_count": 12,
+            "target_service": "ssh"
+        }),
+        // P2: 위험 IP
+        4 => json!({
+            "source_ip": MALICIOUS_IP,
+            "scanned_port_count": 1024,
+            "scan_type": "syn",
+            "duration_seconds": 30
+        }),
+        // G4 + P3 + P4 다수결: 안전 IP + 악성 66개 해시 (근거가 서로 엇갈리는 이벤트)
+        5 => json!({
+            "source_ip": SAFE_IP,
+            "hostname": "SRV-DB01",
+            "user": "svc_backup",
+            "method": "sudo",
+            "file_name": "escalate.bin",
+            "file_sha256": MALICIOUS_SHA256
+        }),
+        // 판정 없음: 안전 IP
+        6 => json!({
+            "source_ip": SAFE_IP,
+            "username": "kim",
+            "target_service": "vpn"
+        }),
+        // 판정 없음: 안전 IP
+        7 => json!({
+            "source_ip": SAFE_IP,
+            "username": "kim",
+            "session_seconds": 3600
+        }),
+        // 판정 없음: IOC 없음
+        8 => json!({
+            "hostname": "WKS-1183",
+            "username": "lee"
+        }),
+        // 판정 없음: 실제 존재하는 도메인
+        _ => json!({
+            "hostname": "WKS-1183",
+            "destination_domain": SAFE_DOMAIN,
+            "package": "office-update",
+            "version": "16.0.1"
+        }),
+    };
+
+    let mut map = serde_json::Map::new();
+    map.insert("event_type".to_string(), json!(event.event_type));
+    map.insert("timestamp".to_string(), json!(timestamp));
+    if let Value::Object(rest) = fields {
+        map.extend(rest);
+    }
+    map.insert("test_ai".to_string(), json!(event.test_ai));
+    Value::Object(map)
+}
+
+// ai 명령으로 보낼 이벤트 1건 생성: 파싱 실패 이벤트 또는 AI 테스트 이벤트
+fn ai_payload(number: u64) -> Value {
+    match ai_pick(number) {
+        // 파싱 실패 이벤트: 기존 실패 이벤트와 같은 형식 (event_id 없음, 추적용 loadgen_id)
+        AiPick::Failure => with_id_first(
+            "loadgen_id",
+            format!("{ID_PREFIX}-failure-{number}"),
+            base_fields(EventType::LoginFailure, Case::Safe),
+        ),
+        AiPick::Event(index) => {
+            let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(); // 예: 2026-10-23T10:00:00Z
+            with_id_first(
+                "event_id",
+                format!("{ID_PREFIX}-{number}"),
+                ai_event_fields(index, &timestamp),
+            )
+        }
+    }
+}
+
 // 전송할 이벤트 1건 생성
 // number: 이번 이벤트의 번호 (event_id, loadgen_id에 사용)
 fn build_payload(spec: &EventSpec, number: u64) -> Value {
     match spec.kind {
         // 정상 이벤트: 기본 필드 + event_id (+ 다수결 값)
         Kind::Normal(event_type) => {
-            let mut payload = with_id_first("event_id", format!("{ID_PREFIX}-{number}"), base_fields(event_type, spec.case));
+            let mut payload = with_id_first(
+                "event_id",
+                format!("{ID_PREFIX}-{number}"),
+                base_fields(event_type, spec.case),
+            );
             if let Some(votes) = &spec.votes {
                 payload["test_votes"] = json!(votes);
             }
@@ -389,6 +647,8 @@ fn build_payload(spec: &EventSpec, number: u64) -> Value {
             payload[REJECT_FIELD] = json!("x");
             payload
         }
+        // AI 테스트 이벤트: 번호 해시로 10종 이벤트 또는 파싱 실패 이벤트
+        Kind::Ai => ai_payload(number),
     }
 }
 
@@ -411,6 +671,8 @@ enum Verdict {
     Deny,
     Hold,
     Detect,
+    AiSingle,   // AI 대응 노드 판정, 플레이북 1개 (DENY / HOLD / DETECT 중 하나)
+    AiMajority, // AI 대응 노드 판정, 플레이북 3개 다수결 (DENY / HOLD / DETECT 중 하나)
     NoDecision, // 판정을 낸 플레이북이 없음 (저장된 doc에 playbook_result 필드가 없음)
 }
 
@@ -421,6 +683,8 @@ impl Verdict {
             Verdict::Deny => "DENY",
             Verdict::Hold => "HOLD",
             Verdict::Detect => "DETECT",
+            Verdict::AiSingle => "AI 판정(단일)",
+            Verdict::AiMajority => "AI 판정(다수결 3표)",
             Verdict::NoDecision => "판정 없음",
         }
     }
@@ -430,8 +694,9 @@ impl Verdict {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expected {
     Stored { verdict: Verdict, decisions: usize }, // OpenSearch / ClickHouse에 저장 (decisions: 판정을 낸 플레이북 수)
-    ParseFailure,                                   // Backend 파싱 실패 → storage_failures
-    OsReject,                                       // OpenSearch 거부 → storage_failures
+    ParseFailure,                                  // Backend 파싱 실패 → storage_failures
+    OsReject,                                      // OpenSearch 거부 → storage_failures
+    Ai, // ai: AI 판정(단일 5종, 다수결 1종) + 판정 없음 4종 + 파싱 실패
 }
 
 // 다수결 테스트용 플레이북: test_votes에 이름이 포함되면 해당 판정을 냄
@@ -449,13 +714,15 @@ const VOTE_PLAYBOOKS: [(&str, Verdict); 6] = [
 //   2번 고위험 IP 차단          : 위험 IP(AbuseIPDB 100점)면 이벤트 종류와 관계없이 DENY
 //   4번 고위험 실행파일 차단    : file_download + 위험 해시(악성 66개) + .exe → DENY
 //   5번 차단 도메인 비컨 차단   : dns_beacon + 차단 도메인 → DENY
-//   6~11번 [TEST] D1~T2         : test_votes에 이름이 포함되면 판정
+//   6~11번 [TEST-VOTE] D1~T2         : test_votes에 이름이 포함되면 판정 (기본 비활성, --votes 테스트 시 활성화 필요)
 // 1번(조회 실패 보류)은 외부 조회 오류 시에만 걸리고, 3번(AI 분석)은 비활성이며 loadgen 해시(악성 0개 / 66개)는 조건(1~9개)에 해당하지 않음
 fn expected(spec: &EventSpec) -> Expected {
     let event_type = match spec.kind {
         Kind::Normal(t) => t,
         Kind::Failure => return Expected::ParseFailure,
         Kind::Reject => return Expected::OsReject,
+        // ai: [TEST-AI] 플레이북만 활성 기준
+        Kind::Ai => return Expected::Ai,
     };
 
     let malicious = spec.case == Case::Malicious;
@@ -477,7 +744,10 @@ fn expected(spec: &EventSpec) -> Expected {
         }
     }
 
-    Expected::Stored { verdict: majority(&decisions), decisions: decisions.len() }
+    Expected::Stored {
+        verdict: majority(&decisions),
+        decisions: decisions.len(),
+    }
 }
 
 // 다수결 집계 (Backend engine.rs의 majority_vote와 같은 규칙)
@@ -501,23 +771,41 @@ fn majority(decisions: &[Verdict]) -> Verdict {
 // 예상 결과를 화면 출력용 문장으로 변환
 fn describe_expected(expected: Expected) -> String {
     match expected {
-        Expected::Stored { verdict: Verdict::NoDecision, .. } => "저장 / 판정 없음".to_string(),
-        Expected::Stored { verdict, decisions } => format!("저장 / {} (판정한 플레이북 {decisions}개)", verdict.label()),
+        Expected::Stored {
+            verdict: Verdict::NoDecision,
+            ..
+        } => "저장 / 판정 없음".to_string(),
+        Expected::Stored { verdict, decisions } => {
+            format!("저장 / {} (판정한 플레이북 {decisions}개)", verdict.label())
+        }
         Expected::ParseFailure => "storage_failures 저장 (Backend 파싱 실패)".to_string(),
-        Expected::OsReject => "storage_failures 저장 (OpenSearch 거부, OpenSearch / ClickHouse 저장 안 됨)".to_string(),
+        Expected::OsReject => {
+            "storage_failures 저장 (OpenSearch 거부, OpenSearch / ClickHouse 저장 안 됨)"
+                .to_string()
+        }
+        Expected::Ai => format!(
+            "저장 / AI 판정 단일 5종 + 다수결 1종(3표) + 판정 없음 4종, 파싱 실패 약 {AI_FAILURE_PERCENT}% → storage_failures ([TEST-AI] 플레이북만 활성 기준)"
+        ),
     }
 }
 
 // 전체 실행(반복 포함) 기준 기대 건수
 struct ExpectedTotals {
-    stored: u64,                        // OpenSearch / ClickHouse에 저장될 건수
-    by_verdict: BTreeMap<Verdict, u64>, // 저장될 이벤트의 판정별 건수
-    parse_failure: u64,                 // storage_failures 파싱 실패 건수
-    os_reject: u64,                     // storage_failures OpenSearch 거부 건수
+    stored: u64,                                     // OpenSearch / ClickHouse에 저장될 건수
+    by_verdict: BTreeMap<Verdict, u64>,              // 저장될 이벤트의 판정별 건수
+    parse_failure: u64,                              // storage_failures 파싱 실패 건수
+    os_reject: u64,                                  // storage_failures OpenSearch 거부 건수
+    by_type: Vec<(&'static str, &'static str, u64)>, // ai: event_type별 건수 (event_type, test_ai, 건수)
 }
 
 fn expected_totals(config: &RunConfig) -> ExpectedTotals {
-    let mut totals = ExpectedTotals { stored: 0, by_verdict: BTreeMap::new(), parse_failure: 0, os_reject: 0 };
+    let mut totals = ExpectedTotals {
+        stored: 0,
+        by_verdict: BTreeMap::new(),
+        parse_failure: 0,
+        os_reject: 0,
+        by_type: Vec::new(),
+    };
     for spec in &config.specs {
         let count = spec.count * config.reps as u64;
         match expected(spec) {
@@ -527,6 +815,29 @@ fn expected_totals(config: &RunConfig) -> ExpectedTotals {
             }
             Expected::ParseFailure => totals.parse_failure += count,
             Expected::OsReject => totals.os_reject += count,
+            Expected::Ai => {
+                // ai 명령은 반복 없이 1회만 실행(reps = 1)하므로 START_ID부터 count건의 번호를 한 번씩 확인
+                // 번호마다 ai_pick으로 보낼 이벤트가 정해지므로, 실제 전송과 같은 방식으로 세어 정확한 기대값을 계산
+                let mut type_counts = [0u64; AI_EVENTS.len()];
+                for number in config.start_id..config.start_id + count {
+                    match ai_pick(number) {
+                        AiPick::Failure => totals.parse_failure += 1,
+                        AiPick::Event(index) => type_counts[index] += 1,
+                    }
+                }
+                for (event, &type_count) in AI_EVENTS.iter().zip(type_counts.iter()) {
+                    let verdict = match event.category {
+                        AiCategory::Single => Verdict::AiSingle,
+                        AiCategory::Majority => Verdict::AiMajority,
+                        AiCategory::Pass => Verdict::NoDecision,
+                    };
+                    totals.stored += type_count;
+                    *totals.by_verdict.entry(verdict).or_insert(0) += type_count;
+                    totals
+                        .by_type
+                        .push((event.event_type, event.test_ai, type_count));
+                }
+            }
         }
     }
     totals
@@ -548,7 +859,10 @@ fn load_ports() -> Ports {
     // CARGO_MANIFEST_DIR: 빌드할 때 scripts/loadgen의 절대경로로 고정되므로 실행 위치와 관계없이 같은 파일을 읽음
     let _ = dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docker/.env"));
     let port = |name: &str, default: u16| {
-        std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(default)
     };
     Ports {
         vector_api: port("VECTOR_API_PORT", 8686),
@@ -564,10 +878,19 @@ fn load_ports() -> Ports {
 async fn check_services(client: &Client, ports: &Ports) {
     const TIMEOUT: Duration = Duration::from_secs(2);
     let http_checks = [
-        ("Vector", format!("http://localhost:{}/health", ports.vector_api)),
+        (
+            "Vector",
+            format!("http://localhost:{}/health", ports.vector_api),
+        ),
         ("Backend", format!("http://localhost:{BACKEND_PORT}/health")),
-        ("OpenSearch", format!("http://localhost:{}", ports.opensearch)),
-        ("ClickHouse", format!("http://localhost:{}/ping", ports.clickhouse)),
+        (
+            "OpenSearch",
+            format!("http://localhost:{}", ports.opensearch),
+        ),
+        (
+            "ClickHouse",
+            format!("http://localhost:{}/ping", ports.clickhouse),
+        ),
     ];
 
     box_top("서비스 상태");
@@ -583,12 +906,21 @@ async fn check_services(client: &Client, ports: &Ports) {
 
     // Postgres는 HTTP를 제공하지 않으므로 포트에 연결되는지만 확인
     let pg_addr = format!("localhost:{}", ports.postgres);
-    let pg_ok = matches!(tokio::time::timeout(TIMEOUT, TcpStream::connect(&pg_addr)).await, Ok(Ok(_)));
+    let pg_ok = matches!(
+        tokio::time::timeout(TIMEOUT, TcpStream::connect(&pg_addr)).await,
+        Ok(Ok(_))
+    );
     all_ok &= pg_ok;
-    box_line(&format!("{} {:<10} {pg_addr} (포트 연결만 확인)", if pg_ok { "✓" } else { "✗" }, "Postgres"));
+    box_line(&format!(
+        "{} {:<10} {pg_addr} (포트 연결만 확인)",
+        if pg_ok { "✓" } else { "✗" },
+        "Postgres"
+    ));
 
     if !all_ok {
-        box_line("⚠ 꺼진 서비스가 있음: 전송은 성공으로 나와도 저장되지 않거나 확인 명령이 실패할 수 있음");
+        box_line(
+            "⚠ 꺼진 서비스가 있음: 전송은 성공으로 나와도 저장되지 않거나 확인 명령이 실패할 수 있음",
+        );
     }
     box_bottom();
     println!();
@@ -610,7 +942,10 @@ fn print_expected_summary(config: &RunConfig) {
             .map(|(v, c)| format!("{} {}", v.label(), with_commas(*c)))
             .collect::<Vec<_>>()
             .join(" / ");
-        box_line(&format!("OpenSearch / ClickHouse : {}건 ({verdicts})", with_commas(totals.stored)));
+        box_line(&format!(
+            "OpenSearch / ClickHouse : {}건 ({verdicts})",
+            with_commas(totals.stored)
+        ));
     }
     if totals.parse_failure > 0 || totals.os_reject > 0 {
         let mut parts = Vec::new();
@@ -622,10 +957,27 @@ fn print_expected_summary(config: &RunConfig) {
         }
         box_line(&format!("storage_failures        : {}", parts.join(" / ")));
     }
+    // ai: event_type별 기대 건수 (어떤 [TEST-AI] 플레이북이 판정하는지 test_ai 코드와 함께 표시)
+    if !totals.by_type.is_empty() {
+        box_line("");
+        box_line("event_type별 기대 건수 (test_ai)");
+        for (event_type, test_ai, count) in &totals.by_type {
+            box_line(&format!(
+                "  {event_type:<22} {test_ai:<10} {}건",
+                with_commas(*count)
+            ));
+        }
+        box_line("");
+        box_line("※ AI 판정 결과(DENY / HOLD / DETECT)는 모델이 정하므로 실행 후 확인");
+    }
     box_line("");
     box_line("※ 이전 실행과 번호가 겹치면 이전 실행분까지 합산되어 기대값보다 크게 나옴");
-    box_line("※ 최종 실패가 있으면 그 건수만큼 기대값에서 빼고 비교 (재전송은 같은 event_id로 보내므로 중복 저장 여부는 고유 event_id 수로 확인)");
-    box_line("※ seed 플레이북 기준이며, 외부 조회(AbuseIPDB, VirusTotal, DNS) 오류 시 HOLD가 추가되어 달라질 수 있음");
+    box_line(
+        "※ 최종 실패가 있으면 그 건수만큼 기대값에서 빼고 비교 (재전송은 같은 event_id로 보내므로 중복 저장 여부는 고유 event_id 수로 확인)",
+    );
+    box_line(
+        "※ seed 플레이북 기준이며, 외부 조회(AbuseIPDB, VirusTotal, DNS) 오류 시 HOLD가 추가되어 달라질 수 있음",
+    );
     box_bottom();
 }
 
@@ -649,23 +1001,36 @@ fn print_check_guide(ports: &Ports) {
     );
 
     print_step("[OpenSearch] 저장된 이벤트 수와 판정별 건수 (판정 없음은 NONE)");
-    println!("curl -s -X POST \"http://localhost:{}/event-logs-*/_refresh\" > /dev/null", ports.opensearch);
+    println!(
+        "curl -s -X POST \"http://localhost:{}/event-logs-*/_refresh\" > /dev/null",
+        ports.opensearch
+    );
     println!(
         "curl -s \"http://localhost:{}/event-logs-*/_search?size=0&filter_path=hits.total.value,aggregations.action.buckets\" -H \"Content-Type: application/json\" -d '{{\"track_total_hits\":true,\"query\":{{\"prefix\":{{\"event_id\":\"{ID_PREFIX}-\"}}}},\"aggs\":{{\"action\":{{\"terms\":{{\"field\":\"playbook_result.action\",\"missing\":\"NONE\"}}}}}}}}'",
         ports.opensearch
     );
 
-    print_step("[ClickHouse] 판정별 건수 (판정 없음은 \\N, FINAL: 중복 저장분을 하나로 합쳐서 계산)");
-    println!("docker exec -i clickhouse sh -c 'clickhouse-client -u \"$CLICKHOUSE_USER\" --password \"$CLICKHOUSE_PASSWORD\"' <<'SQL'");
+    print_step(
+        "[ClickHouse] 판정별 건수 (판정 없음은 \\N, FINAL: 중복 저장분을 하나로 합쳐서 계산)",
+    );
+    println!(
+        "docker exec -i clickhouse sh -c 'clickhouse-client -u \"$CLICKHOUSE_USER\" --password \"$CLICKHOUSE_PASSWORD\"' <<'SQL'"
+    );
     println!("SELECT payload.playbook_result.action AS action, count() AS count");
     println!("FROM shire.event_logs FINAL");
     println!("WHERE startsWith(payload.event_id, '{ID_PREFIX}-')");
     println!("GROUP BY action ORDER BY action");
     println!("SQL");
 
-    print_step("[Postgres] storage_failures 건수 (failure: Backend 파싱 실패 / reject: OpenSearch 거부)");
-    println!("docker exec -i postgres sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"' <<'SQL'");
-    println!("SELECT CASE WHEN t LIKE '%{ID_PREFIX}-failure-%' THEN 'failure' ELSE 'reject' END AS kind, count(*)");
+    print_step(
+        "[Postgres] storage_failures 건수 (failure: Backend 파싱 실패 / reject: OpenSearch 거부)",
+    );
+    println!(
+        "docker exec -i postgres sh -c 'psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"' <<'SQL'"
+    );
+    println!(
+        "SELECT CASE WHEN t LIKE '%{ID_PREFIX}-failure-%' THEN 'failure' ELSE 'reject' END AS kind, count(*)"
+    );
     println!("FROM (SELECT bytea_to_text_safe(payload) AS t FROM storage_failures) s");
     println!("WHERE t LIKE '%{ID_PREFIX}-failure-%' OR t LIKE '%{ID_PREFIX}-reject-%'");
     println!("GROUP BY kind ORDER BY kind;");
@@ -686,7 +1051,11 @@ impl Interleaver {
     fn new(counts: &[u64]) -> Self {
         let weights: Vec<i128> = counts.iter().map(|&c| c as i128).collect();
         let total = weights.iter().sum();
-        Self { current: vec![0; weights.len()], weights, total }
+        Self {
+            current: vec![0; weights.len()],
+            weights,
+            total,
+        }
     }
 
     // 다음에 보낼 묶음의 위치(specs의 index) 반환
@@ -719,7 +1088,10 @@ enum SendError {
 // - 408 / 429 / 5xx: HTTP 표준에서 일시적인 오류를 뜻하는 상태 코드
 // 그 외 4xx(잘못된 JSON 등)는 다시 보내도 같은 결과이므로 제외
 fn is_retryable_status(code: u16, body: &str) -> bool {
-    (code == 400 && body.contains("failed to deliver")) || code == 408 || code == 429 || (500..600).contains(&code)
+    (code == 400 && body.contains("failed to deliver"))
+        || code == 408
+        || code == 429
+        || (500..600).contains(&code)
 }
 
 // 요청 1번 전송
@@ -731,7 +1103,11 @@ async fn send_once(client: &Client, url: &str, payload: &Value) -> Result<(), Se
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             let msg = format!("HTTP {status}: {body}");
-            if is_retryable_status(status.as_u16(), &body) { Err(SendError::Retry(msg)) } else { Err(SendError::Fail(msg)) }
+            if is_retryable_status(status.as_u16(), &body) {
+                Err(SendError::Retry(msg))
+            } else {
+                Err(SendError::Fail(msg))
+            }
         }
         // 연결 단계에서 실패 (예: Vector 재시작 중 연결 거부): 요청이 Vector에 도착하지 않았으므로 다시 보내도 중복되지 않음
         Err(e) if e.is_connect() => Err(SendError::Retry(format!("연결 실패: {e}"))),
@@ -754,7 +1130,13 @@ async fn send_event(client: &Client, url: &str, payload: &Value) -> (u32, Result
             Err(SendError::Fail(e)) => return (retries, Err(e)),
             Err(SendError::Retry(e)) => {
                 if started.elapsed() >= RETRY_LIMIT {
-                    return (retries, Err(format!("{}초 동안 재전송 {retries}회 후 포기: {e}", RETRY_LIMIT.as_secs())));
+                    return (
+                        retries,
+                        Err(format!(
+                            "{}초 동안 재전송 {retries}회 후 포기: {e}",
+                            RETRY_LIMIT.as_secs()
+                        )),
+                    );
                 }
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(RETRY_MAX_DELAY);
@@ -785,7 +1167,13 @@ async fn run_once(client: &Client, config: &RunConfig, rep: u32, first_number: u
     let url: Arc<str> = Arc::from(config.url.as_str()); // 모든 Task가 같은 주소를 복사 없이 공유
     let mut set = JoinSet::new();
 
-    let mut result = RunResult { success: 0, fail: 0, retried: 0, elapsed: 0.0, first_error: None };
+    let mut result = RunResult {
+        success: 0,
+        fail: 0,
+        retried: 0,
+        elapsed: 0.0,
+        first_error: None,
+    };
     let started = Instant::now();
 
     for offset in 0..total {
@@ -826,7 +1214,11 @@ async fn run_once(client: &Client, config: &RunConfig, rep: u32, first_number: u
     } else {
         // 간단 출력: 1줄 (여러 loadgen을 동시에 실행해도 구분되도록 이벤트 종류와 번호 범위를 앞에 표시)
         // 예: file_download+fail+reject 1~1200000 | 1,200,000건 | 성공 1,200,000 / 실패 0 / 재전송 0 | 49.14초 (24,420 req/s)
-        let rep_prefix = if config.reps > 1 { format!("[{}/{}] ", rep + 1, config.reps) } else { String::new() };
+        let rep_prefix = if config.reps > 1 {
+            format!("[{}/{}] ", rep + 1, config.reps)
+        } else {
+            String::new()
+        };
         println!(
             "{rep_prefix}{} {}~{} | {}건 | 성공 {} / 실패 {} / 재전송 {} | {:.2}초 ({} req/s)",
             config.label(),
@@ -848,7 +1240,10 @@ async fn run_once(client: &Client, config: &RunConfig, rep: u32, first_number: u
 
 // Task 1개의 결과를 집계에 반영
 // JoinError: Task가 panic 등으로 비정상 종료된 경우 (전송 여부를 알 수 없으므로 실패로 집계)
-fn tally(result: &mut RunResult, joined: Result<(u32, Result<(), String>), tokio::task::JoinError>) {
+fn tally(
+    result: &mut RunResult,
+    joined: Result<(u32, Result<(), String>), tokio::task::JoinError>,
+) {
     let (retries, outcome) = match joined {
         Ok(sent) => sent,
         Err(e) => (0, Err(format!("전송 Task 비정상 종료: {e}"))),
@@ -886,7 +1281,11 @@ fn print_plan(config: &RunConfig) {
 
     box_top("예상 결과 (seed 플레이북 기준)");
     for (i, spec) in config.specs.iter().enumerate() {
-        box_line(&format!("[{}] {}", i + 1, describe_expected(expected(spec))));
+        box_line(&format!(
+            "[{}] {}",
+            i + 1,
+            describe_expected(expected(spec))
+        ));
     }
     box_bottom();
     println!();
@@ -934,13 +1333,24 @@ async fn execute(config: &RunConfig, client: &Client) {
     let retried: u64 = runs.iter().map(|r| r.retried).sum();
 
     println!();
-    box_top(&format!("결과 요약 ({}회 반복, 동시성 {})", config.reps, config.parallel));
-    box_line(&format!("사용한 번호: {} ~ {}", config.start_id, last_number));
-    box_line(&format!("평균 성공: {avg_success:.1} / 평균 실패: {avg_fail:.1}"));
+    box_top(&format!(
+        "결과 요약 ({}회 반복, 동시성 {})",
+        config.reps, config.parallel
+    ));
+    box_line(&format!(
+        "사용한 번호: {} ~ {}",
+        config.start_id, last_number
+    ));
+    box_line(&format!(
+        "평균 성공: {avg_success:.1} / 평균 실패: {avg_fail:.1}"
+    ));
     if retried > 0 {
         box_line(&format!("재전송한 이벤트 합계: {}", with_commas(retried)));
     }
-    box_line(&format!("평균 처리시간: {avg_time:.2}초 ({:.1} req/s)", total as f64 / avg_time));
+    box_line(&format!(
+        "평균 처리시간: {avg_time:.2}초 ({:.1} req/s)",
+        total as f64 / avg_time
+    ));
     box_bottom();
     println!();
 
@@ -969,7 +1379,10 @@ fn validate(config: &RunConfig) -> Result<(), String> {
     }
     let total = config.total_per_run();
     if total == 0 {
-        return Err("보낼 이벤트가 없습니다. (전송 건수, 실패 이벤트 수, 거부 이벤트 수가 모두 0)".to_string());
+        return Err(
+            "보낼 이벤트가 없습니다. (전송 건수, 실패 이벤트 수, 거부 이벤트 수가 모두 0)"
+                .to_string(),
+        );
     }
     // checked_*: 계산 결과가 u64 범위를 넘으면 None
     let last = total
@@ -977,9 +1390,48 @@ fn validate(config: &RunConfig) -> Result<(), String> {
         .and_then(|n| n.checked_add(config.start_id))
         .filter(|&n| n <= MAX_NUMBER);
     if last.is_none() {
-        return Err(format!("번호 범위가 너무 큽니다. (시작 번호 + 총 건수 × 반복 횟수 ≤ {})", with_commas(MAX_NUMBER)));
+        return Err(format!(
+            "번호 범위가 너무 큽니다. (시작 번호 + 총 건수 × 반복 횟수 ≤ {})",
+            with_commas(MAX_NUMBER)
+        ));
     }
     Ok(())
+}
+
+// ai 명령 인자 해석: ai <START_ID> <COUNT> [PARALLEL]
+// - COUNT는 AI_COUNTS(1000000, 5000000)만 허용 (파싱 실패 이벤트 포함 총 건수)
+// - PARALLEL은 인자 방식과 같은 위치이며, 생략하면 인자 방식 기본값과 같은 100
+// - 결과를 비교할 수 있도록 설정 / 예상 결과 / 서비스 상태 / 기대값을 항상 자세히 출력
+fn parse_ai_args(args: &[String]) -> Result<RunConfig, String> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(AI_USAGE.to_string());
+    }
+    let start_id =
+        parse_number(&args[0]).ok_or_else(|| "START_ID는 숫자여야 합니다.".to_string())?;
+    let count = parse_number(&args[1])
+        .filter(|count| AI_COUNTS.contains(count))
+        .ok_or_else(|| "COUNT는 1000000 또는 5000000만 가능합니다.".to_string())?;
+    let parallel = match args.get(2) {
+        Some(value) => {
+            parse_number(value).ok_or_else(|| "PARALLEL은 숫자여야 합니다.".to_string())? as usize
+        }
+        None => 100,
+    };
+
+    Ok(RunConfig {
+        specs: vec![EventSpec {
+            kind: Kind::Ai,
+            case: Case::Safe,
+            count,
+            votes: None,
+        }],
+        start_id,
+        parallel,
+        url: DEFAULT_URL.to_string(),
+        reps: 1,
+        cooldown: 0,
+        verbose: true,
+    })
 }
 
 // 눈에 띄는 제목 출력 (예: 결과 확인 방법)
@@ -1041,7 +1493,7 @@ fn with_commas(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
@@ -1068,9 +1520,24 @@ struct MenuItem {
 }
 
 static MENU: [MenuItem; 6] = [
-    MenuItem { title: "file_download (파일 다운로드)", kind: Kind::Normal(EventType::FileDownload), choose_case: true, votes: false },
-    MenuItem { title: "login_failure (로그인 실패)", kind: Kind::Normal(EventType::LoginFailure), choose_case: true, votes: false },
-    MenuItem { title: "dns_beacon (외부 도메인과 주기적 통신)", kind: Kind::Normal(EventType::DnsBeacon), choose_case: true, votes: false },
+    MenuItem {
+        title: "file_download (파일 다운로드)",
+        kind: Kind::Normal(EventType::FileDownload),
+        choose_case: true,
+        votes: false,
+    },
+    MenuItem {
+        title: "login_failure (로그인 실패)",
+        kind: Kind::Normal(EventType::LoginFailure),
+        choose_case: true,
+        votes: false,
+    },
+    MenuItem {
+        title: "dns_beacon (외부 도메인과 주기적 통신)",
+        kind: Kind::Normal(EventType::DnsBeacon),
+        choose_case: true,
+        votes: false,
+    },
     MenuItem {
         title: "실패 이벤트 (event_id 없음 → Backend 파싱 실패 → storage_failures 저장)",
         kind: Kind::Failure,
@@ -1094,8 +1561,14 @@ static MENU: [MenuItem; 6] = [
 // JSON 예시의 필드별 설명 (메뉴에서 각 줄 끝에 주석으로 표시)
 // 여기에 없는 필드는 설명 없이 표시됨
 const FIELD_HELP: [(&str, &str); 16] = [
-    ("event_id", "이벤트 ID (실행할 때 지정한 시작 번호부터 1씩 증가)"),
-    ("loadgen_id", "추적용 ID (event_id가 없어 Backend 파싱 실패, storage_failures에서 찾을 때 사용)"),
+    (
+        "event_id",
+        "이벤트 ID (실행할 때 지정한 시작 번호부터 1씩 증가)",
+    ),
+    (
+        "loadgen_id",
+        "추적용 ID (event_id가 없어 Backend 파싱 실패, storage_failures에서 찾을 때 사용)",
+    ),
     ("event_type", "이벤트 종류"),
     ("timestamp", "이벤트 발생 시각 (UTC, 전송 시각으로 채움)"),
     ("source_ip", "출발지 IP (AbuseIPDB 위험도 조회 대상)"),
@@ -1109,7 +1582,10 @@ const FIELD_HELP: [(&str, &str); 16] = [
     ("hostname", "외부와 통신한 내부 PC 이름"),
     ("request_interval_seconds", "통신 주기 (초)"),
     ("test_votes", "판정을 낼 다수결 테스트용 플레이북 이름 목록"),
-    ("enrichment_dst_domain", "OpenSearch 거부용 (객체로 정의된 필드에 문자열을 넣어 타입 불일치 발생)"),
+    (
+        "enrichment_dst_domain",
+        "OpenSearch 거부용 (객체로 정의된 필드에 문자열을 넣어 타입 불일치 발생)",
+    ),
 ];
 
 // 대화형 실행: 설정 → 확인 → 실행 / 처음부터 다시 / 종료
@@ -1139,7 +1615,12 @@ async fn setup() {
         check_services(&client, &ports).await;
         print_expected_summary(&config);
         println!();
-        match ask_number(" [1] 실행   [2] 처음부터 다시   [3] 종료\n ▶ 선택: ", None, 1, 3) {
+        match ask_number(
+            " [1] 실행   [2] 처음부터 다시   [3] 종료\n ▶ 선택: ",
+            None,
+            1,
+            3,
+        ) {
             1 => {
                 println!();
                 execute(&config, &client).await;
@@ -1168,7 +1649,12 @@ fn ask_specs() -> Option<Vec<EventSpec>> {
                 _ => return None,
             }
         } else {
-            match ask_number(" [1] 이벤트 추가   [2] 처음부터 다시   [3] 설정 완료\n ▶ 선택: ", None, 1, 3) {
+            match ask_number(
+                " [1] 이벤트 추가   [2] 처음부터 다시   [3] 설정 완료\n ▶ 선택: ",
+                None,
+                1,
+                3,
+            ) {
                 1 => specs.push(ask_spec()),
                 2 => specs.clear(),
                 _ => return Some(specs),
@@ -1181,12 +1667,18 @@ fn ask_specs() -> Option<Vec<EventSpec>> {
 fn ask_spec() -> EventSpec {
     clear_screen();
     print_event_menu();
-    let item = &MENU[(ask_number(" ▶ 보낼 이벤트 번호: ", None, 1, MENU.len() as u64) - 1) as usize];
+    let item =
+        &MENU[(ask_number(" ▶ 보낼 이벤트 번호: ", None, 1, MENU.len() as u64) - 1) as usize];
     println!();
     println!(" 선택: {}", item.title);
 
     let case = if item.choose_case {
-        match ask_number(" 케이스   [1] 안전(safe)   [2] 위험(malicious)\n ▶ 선택: ", None, 1, 2) {
+        match ask_number(
+            " 케이스   [1] 안전(safe)   [2] 위험(malicious)\n ▶ 선택: ",
+            None,
+            1,
+            2,
+        ) {
             1 => Case::Safe,
             _ => Case::Malicious,
         }
@@ -1197,7 +1689,12 @@ fn ask_spec() -> EventSpec {
     let votes = if item.votes { Some(ask_votes()) } else { None };
     let count = ask_number(" ▶ 건수: ", None, 1, MAX_SPEC_COUNT);
 
-    EventSpec { kind: item.kind, case, count, votes }
+    EventSpec {
+        kind: item.kind,
+        case,
+        count,
+        votes,
+    }
 }
 
 // 다수결 표 수 입력 → test_votes 값 생성 (예: DENY 2, HOLD 1 → "D1,D2,H1")
@@ -1235,13 +1732,30 @@ fn ask_options(specs: Vec<EventSpec>) -> RunConfig {
     print_current(&specs);
     println!(" Enter만 누르면 기본값 사용");
     let parallel = ask_number(" ▶ 동시성 [기본 100]: ", Some(100), 1, MAX_PARALLEL) as usize;
-    let start_id = ask_number(" ▶ 시작 번호 [기본 1] (이전 테스트와 겹치지 않게): ", Some(1), 0, MAX_NUMBER);
+    let start_id = ask_number(
+        " ▶ 시작 번호 [기본 1] (이전 테스트와 겹치지 않게): ",
+        Some(1),
+        0,
+        MAX_NUMBER,
+    );
     let reps = ask_number(" ▶ 반복 횟수 [기본 1]: ", Some(1), 1, MAX_REPS) as u32;
     // 쿨다운은 회차 사이 대기 시간이므로 2회 이상 반복할 때만 질문
-    let cooldown = if reps > 1 { ask_number(" ▶ 쿨다운 초 [기본 10]: ", Some(10), 0, MAX_COOLDOWN) } else { 0 };
+    let cooldown = if reps > 1 {
+        ask_number(" ▶ 쿨다운 초 [기본 10]: ", Some(10), 0, MAX_COOLDOWN)
+    } else {
+        0
+    };
 
     // 대화형은 최종 확인 화면이 필요하므로 항상 자세히 출력
-    RunConfig { specs, start_id, parallel, url: DEFAULT_URL.to_string(), reps, cooldown, verbose: true }
+    RunConfig {
+        specs,
+        start_id,
+        parallel,
+        url: DEFAULT_URL.to_string(),
+        reps,
+        cooldown,
+        verbose: true,
+    }
 }
 
 // 현재 설정한 이벤트 묶음 목록 출력
@@ -1280,7 +1794,12 @@ fn print_event_menu() {
 // - 다수결 값: <다수결 설정 시 세팅>
 fn example_value(item: &MenuItem) -> Value {
     let make = |case| {
-        let spec = EventSpec { kind: item.kind, case, count: 1, votes: item.votes.then(|| "D1".to_string()) };
+        let spec = EventSpec {
+            kind: item.kind,
+            case,
+            count: 1,
+            votes: item.votes.then(|| "D1".to_string()),
+        };
         build_payload(&spec, 0)
     };
     let malicious = make(Case::Malicious);
@@ -1311,13 +1830,22 @@ fn example_value(item: &MenuItem) -> Value {
 fn render_example(item: &MenuItem) -> String {
     let pretty = serde_json::to_string_pretty(&example_value(item)).unwrap_or_default();
     let lines: Vec<&str> = pretty.lines().collect();
-    let width = lines.iter().map(|line| display_width(line)).max().unwrap_or(0);
+    let width = lines
+        .iter()
+        .map(|line| display_width(line))
+        .max()
+        .unwrap_or(0);
 
     let mut out = Vec::new();
     for line in &lines {
         // 필드 줄은 `  "필드명": 값` 형태이므로 첫 번째 따옴표 사이의 문자열이 필드명
-        let key = line.trim_start().strip_prefix('"').and_then(|rest| rest.split('"').next());
-        let help = key.and_then(|k| FIELD_HELP.iter().find(|(name, _)| *name == k)).map(|(_, help)| *help);
+        let key = line
+            .trim_start()
+            .strip_prefix('"')
+            .and_then(|rest| rest.split('"').next());
+        let help = key
+            .and_then(|k| FIELD_HELP.iter().find(|(name, _)| *name == k))
+            .map(|(_, help)| *help);
         match help {
             Some(help) => {
                 let pad = " ".repeat(width - display_width(line));
@@ -1365,7 +1893,11 @@ fn ask_number(prompt: &str, default: Option<u64>, min: u64, max: u64) -> u64 {
         }
         match parse_number(&input) {
             Some(n) if (min..=max).contains(&n) => return n,
-            _ => println!("   ⚠ {} ~ {} 사이의 숫자를 입력하세요.", with_commas(min), with_commas(max)),
+            _ => println!(
+                "   ⚠ {} ~ {} 사이의 숫자를 입력하세요.",
+                with_commas(min),
+                with_commas(max)
+            ),
         }
     }
 }
@@ -1388,6 +1920,23 @@ async fn main() {
         print_check_guide(&load_ports());
         return;
     }
+    // `loadgen ai <START_ID> <COUNT> [PARALLEL]`이면 AI 대응 노드 테스트 이벤트 전송
+    if raw.len() >= 2 && raw[1] == "ai" {
+        let config = match parse_ai_args(&raw[2..]) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("{e}");
+                eprintln!("{AI_USAGE}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = validate(&config) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        run(config).await;
+        return;
+    }
 
     let args = Args::parse();
 
@@ -1402,10 +1951,20 @@ async fn main() {
         });
     }
     if args.fail > 0 {
-        specs.push(EventSpec { kind: Kind::Failure, case: args.case, count: args.fail, votes: None });
+        specs.push(EventSpec {
+            kind: Kind::Failure,
+            case: args.case,
+            count: args.fail,
+            votes: None,
+        });
     }
     if args.reject > 0 {
-        specs.push(EventSpec { kind: Kind::Reject, case: args.case, count: args.reject, votes: None });
+        specs.push(EventSpec {
+            kind: Kind::Reject,
+            case: args.case,
+            count: args.reject,
+            votes: None,
+        });
     }
 
     let config = RunConfig {
@@ -1430,13 +1989,24 @@ mod tests {
     use super::*;
 
     fn spec(kind: Kind, case: Case, count: u64, votes: Option<&str>) -> EventSpec {
-        EventSpec { kind, case, count, votes: votes.map(String::from) }
+        EventSpec {
+            kind,
+            case,
+            count,
+            votes: votes.map(String::from),
+        }
     }
 
     // 시나리오 1: 한 바퀴(총 건수)를 돌면 각 묶음이 정확히 자기 건수만큼 나오는지
     #[test]
     fn interleaver_exact_counts() {
-        for counts in [vec![3, 1], vec![1_000_000, 10], vec![5, 0, 2], vec![7], vec![1, 1, 1]] {
+        for counts in [
+            vec![3, 1],
+            vec![1_000_000, 10],
+            vec![5, 0, 2],
+            vec![7],
+            vec![1, 1, 1],
+        ] {
             let mut it = Interleaver::new(&counts);
             let total: u64 = counts.iter().sum();
             let mut seen = vec![0u64; counts.len()];
@@ -1458,7 +2028,10 @@ mod tests {
     // 시나리오 3: 정상 이벤트는 event_id가 있고, 실패 이벤트는 event_id 없이 loadgen_id만 있는지
     #[test]
     fn payload_ids() {
-        let normal = build_payload(&spec(Kind::Normal(EventType::LoginFailure), Case::Safe, 1, None), 7);
+        let normal = build_payload(
+            &spec(Kind::Normal(EventType::LoginFailure), Case::Safe, 1, None),
+            7,
+        );
         assert_eq!(normal["event_id"], "loadgen-7");
         assert!(normal.get("loadgen_id").is_none());
         assert!(normal.get("test_votes").is_none());
@@ -1471,12 +2044,26 @@ mod tests {
     // 시나리오 4: 케이스에 따라 IOC 값이 바뀌는지
     #[test]
     fn payload_case_values() {
-        let fd = build_payload(&spec(Kind::Normal(EventType::FileDownload), Case::Malicious, 1, None), 1);
+        let fd = build_payload(
+            &spec(
+                Kind::Normal(EventType::FileDownload),
+                Case::Malicious,
+                1,
+                None,
+            ),
+            1,
+        );
         assert_eq!(fd["source_ip"], MALICIOUS_IP);
         assert_eq!(fd["file_sha256"], MALICIOUS_SHA256);
 
-        let dns_bad = build_payload(&spec(Kind::Normal(EventType::DnsBeacon), Case::Malicious, 1, None), 1);
-        let dns_ok = build_payload(&spec(Kind::Normal(EventType::DnsBeacon), Case::Safe, 1, None), 1);
+        let dns_bad = build_payload(
+            &spec(Kind::Normal(EventType::DnsBeacon), Case::Malicious, 1, None),
+            1,
+        );
+        let dns_ok = build_payload(
+            &spec(Kind::Normal(EventType::DnsBeacon), Case::Safe, 1, None),
+            1,
+        );
         assert_eq!(dns_bad["destination_domain"], MALICIOUS_DOMAIN);
         assert_eq!(dns_ok["destination_domain"], SAFE_DOMAIN);
         assert_eq!(dns_ok["source_ip"], SAFE_IP);
@@ -1485,11 +2072,19 @@ mod tests {
     // 시나리오 5: 다수결 값이 test_votes 필드로 들어가는지
     #[test]
     fn payload_votes() {
-        let p = build_payload(&spec(Kind::Normal(EventType::LoginFailure), Case::Safe, 1, Some("D1,D2,H1")), 1);
+        let p = build_payload(
+            &spec(
+                Kind::Normal(EventType::LoginFailure),
+                Case::Safe,
+                1,
+                Some("D1,D2,H1"),
+            ),
+            1,
+        );
         assert_eq!(p["test_votes"], "D1,D2,H1");
     }
 
-   // 시나리오 6: 거부 이벤트는 event_id가 있고, 객체 필드에 문자열이 들어가는지
+    // 시나리오 6: 거부 이벤트는 event_id가 있고, 객체 필드에 문자열이 들어가는지
     #[test]
     fn payload_reject() {
         let p = build_payload(&spec(Kind::Reject, Case::Safe, 1, None), 9);
@@ -1503,12 +2098,30 @@ mod tests {
         let stored = |verdict, decisions| Expected::Stored { verdict, decisions };
         let normal = |t, case, votes| expected(&spec(Kind::Normal(t), case, 1, votes));
 
-        assert_eq!(normal(EventType::FileDownload, Case::Malicious, None), stored(Verdict::Deny, 2));
-        assert_eq!(normal(EventType::FileDownload, Case::Safe, None), stored(Verdict::NoDecision, 0));
-        assert_eq!(normal(EventType::LoginFailure, Case::Malicious, None), stored(Verdict::Deny, 1));
-        assert_eq!(normal(EventType::LoginFailure, Case::Safe, None), stored(Verdict::NoDecision, 0));
-        assert_eq!(normal(EventType::DnsBeacon, Case::Malicious, None), stored(Verdict::Deny, 2));
-        assert_eq!(normal(EventType::DnsBeacon, Case::Safe, None), stored(Verdict::NoDecision, 0));
+        assert_eq!(
+            normal(EventType::FileDownload, Case::Malicious, None),
+            stored(Verdict::Deny, 2)
+        );
+        assert_eq!(
+            normal(EventType::FileDownload, Case::Safe, None),
+            stored(Verdict::NoDecision, 0)
+        );
+        assert_eq!(
+            normal(EventType::LoginFailure, Case::Malicious, None),
+            stored(Verdict::Deny, 1)
+        );
+        assert_eq!(
+            normal(EventType::LoginFailure, Case::Safe, None),
+            stored(Verdict::NoDecision, 0)
+        );
+        assert_eq!(
+            normal(EventType::DnsBeacon, Case::Malicious, None),
+            stored(Verdict::Deny, 2)
+        );
+        assert_eq!(
+            normal(EventType::DnsBeacon, Case::Safe, None),
+            stored(Verdict::NoDecision, 0)
+        );
 
         // 다수결 (seed 주석의 기대 결과)
         let vote = |v| normal(EventType::LoginFailure, Case::Safe, Some(v));
@@ -1518,8 +2131,14 @@ mod tests {
         assert_eq!(vote("D1,H1,T1"), stored(Verdict::Hold, 3));
         assert_eq!(vote("D1,D2,T1,T2"), stored(Verdict::Hold, 4));
 
-        assert_eq!(expected(&spec(Kind::Failure, Case::Safe, 1, None)), Expected::ParseFailure);
-        assert_eq!(expected(&spec(Kind::Reject, Case::Safe, 1, None)), Expected::OsReject);
+        assert_eq!(
+            expected(&spec(Kind::Failure, Case::Safe, 1, None)),
+            Expected::ParseFailure
+        );
+        assert_eq!(
+            expected(&spec(Kind::Reject, Case::Safe, 1, None)),
+            Expected::OsReject
+        );
     }
 
     // 시나리오 8: 다수결 표 수 → test_votes 값
@@ -1546,7 +2165,12 @@ mod tests {
     #[test]
     fn validate_config() {
         let config = |count, start_id, parallel, reps| RunConfig {
-            specs: vec![spec(Kind::Normal(EventType::LoginFailure), Case::Safe, count, None)],
+            specs: vec![spec(
+                Kind::Normal(EventType::LoginFailure),
+                Case::Safe,
+                count,
+                None,
+            )],
             start_id,
             parallel,
             url: DEFAULT_URL.to_string(),
@@ -1571,7 +2195,10 @@ mod tests {
         assert_eq!(file_download["file_sha256"], "<케이스 설정 시 세팅>");
         assert_eq!(file_download["destination_domain"], DOWNLOAD_DOMAIN); // 케이스와 무관한 값은 그대로
         // ID가 맨 앞 필드인지 (preserve_order)
-        assert_eq!(file_download.as_object().unwrap().keys().next().unwrap(), "event_id");
+        assert_eq!(
+            file_download.as_object().unwrap().keys().next().unwrap(),
+            "event_id"
+        );
 
         let dns = example_value(&MENU[2]);
         assert_eq!(dns["destination_domain"], "<케이스 설정 시 세팅>");
@@ -1580,7 +2207,10 @@ mod tests {
         assert_eq!(failure["loadgen_id"], "loadgen-failure-<번호>");
         assert!(failure.get("event_id").is_none());
         assert_eq!(failure["source_ip"], SAFE_IP); // 케이스를 고르지 않는 항목은 안전 값 그대로
-        assert_eq!(failure.as_object().unwrap().keys().next().unwrap(), "loadgen_id");
+        assert_eq!(
+            failure.as_object().unwrap().keys().next().unwrap(),
+            "loadgen_id"
+        );
 
         let reject = example_value(&MENU[4]);
         assert_eq!(reject["event_id"], "loadgen-reject-<번호>");
@@ -1597,7 +2227,10 @@ mod tests {
         for item in &MENU {
             let text = render_example(item);
             for (key, _) in example_value(item).as_object().unwrap() {
-                let line = text.lines().find(|l| l.contains(&format!("\"{key}\""))).unwrap();
+                let line = text
+                    .lines()
+                    .find(|l| l.contains(&format!("\"{key}\"")))
+                    .unwrap();
                 assert!(line.contains("  // "), "설명 없는 필드: {key}");
             }
         }
@@ -1623,9 +2256,135 @@ mod tests {
     // 시나리오 15: 재전송할 HTTP 응답인지 판단
     #[test]
     fn retryable_status() {
-        assert!(is_retryable_status(400, r#"{"code":400,"message":"Contents failed to deliver to sink"}"#));
-        assert!(!is_retryable_status(400, r#"{"code":400,"message":"Failed decoding body"}"#));
-        assert!(is_retryable_status(408, "") && is_retryable_status(429, "") && is_retryable_status(503, ""));
+        assert!(is_retryable_status(
+            400,
+            r#"{"code":400,"message":"Contents failed to deliver to sink"}"#
+        ));
+        assert!(!is_retryable_status(
+            400,
+            r#"{"code":400,"message":"Failed decoding body"}"#
+        ));
+        assert!(
+            is_retryable_status(408, "")
+                && is_retryable_status(429, "")
+                && is_retryable_status(503, "")
+        );
         assert!(!is_retryable_status(404, "") && !is_retryable_status(422, ""));
+    }
+
+    // 시나리오 16: ai는 같은 번호면 항상 같은 이벤트를 만들고, 파싱 실패 약 1% + 10종 이벤트가 모두 섞여 나오는지
+    #[test]
+    fn ai_pick_mixes_and_is_deterministic() {
+        let mut type_counts = [0u64; AI_EVENTS.len()];
+        let mut failure = 0u64;
+        for number in 1..=100_000 {
+            assert_eq!(ai_pick(number), ai_pick(number));
+            match ai_pick(number) {
+                AiPick::Failure => failure += 1,
+                AiPick::Event(index) => type_counts[index] += 1,
+            }
+        }
+        // 10만 건 중 약 1,000건 (해시라 정확히 1,000건은 아니지만 크게 벗어나지 않음)
+        assert!(
+            (800..=1_200).contains(&failure),
+            "파싱 실패 비율이 약 1%가 아님: {failure}"
+        );
+        assert!(
+            type_counts.iter().all(|&count| count > 0),
+            "나오지 않는 이벤트 종류가 있음: {type_counts:?}"
+        );
+    }
+
+    // 시나리오 17: ai 이벤트에 event_type과 test_ai가 표(AI_EVENTS)대로 들어가고, 파싱 실패 이벤트는 event_id가 없는지
+    #[test]
+    fn payload_ai() {
+        for (index, event) in AI_EVENTS.iter().enumerate() {
+            let fields = ai_event_fields(index, "2026-11-05T10:00:00Z");
+            assert_eq!(fields["event_type"], event.event_type);
+            assert_eq!(fields["test_ai"], event.test_ai);
+        }
+
+        let event_number = (1u64..)
+            .find(|&n| matches!(ai_pick(n), AiPick::Event(_)))
+            .unwrap();
+        let event = build_payload(&spec(Kind::Ai, Case::Safe, 1, None), event_number);
+        assert_eq!(event["event_id"], format!("{ID_PREFIX}-{event_number}"));
+
+        let failure_number = (1u64..).find(|&n| ai_pick(n) == AiPick::Failure).unwrap();
+        let failure = build_payload(&spec(Kind::Ai, Case::Safe, 1, None), failure_number);
+        assert!(failure.get("event_id").is_none());
+        assert_eq!(
+            failure["loadgen_id"],
+            format!("{ID_PREFIX}-failure-{failure_number}")
+        );
+    }
+
+    // 시나리오 18: [TEST-AI] 플레이북 조건(test_ai contains 코드) 기준으로 단일 판정은 1개, 다수결은 3개, 판정 없음은 0개만 걸리는지
+    #[test]
+    fn ai_event_codes() {
+        let codes = ["G1", "G2", "G3", "G4", "P1", "P2", "P3", "P4"];
+        for event in &AI_EVENTS {
+            let matched = codes
+                .iter()
+                .filter(|code| event.test_ai.contains(*code))
+                .count();
+            let expected = match event.category {
+                AiCategory::Single => 1,
+                AiCategory::Majority => 3,
+                AiCategory::Pass => 0,
+            };
+            assert_eq!(
+                matched, expected,
+                "{}: 걸리는 플레이북 수가 다름",
+                event.event_type
+            );
+        }
+    }
+
+    // 시나리오 19: ai 기대값은 저장 건수 + 파싱 실패 건수가 전송 건수와 정확히 같은지
+    #[test]
+    fn expected_ai() {
+        let config = RunConfig {
+            specs: vec![spec(Kind::Ai, Case::Safe, 1_000_000, None)],
+            start_id: 1,
+            parallel: 1,
+            url: DEFAULT_URL.to_string(),
+            reps: 1,
+            cooldown: 0,
+            verbose: false,
+        };
+        let totals = expected_totals(&config);
+        assert_eq!(totals.stored + totals.parse_failure, 1_000_000);
+        assert_eq!(
+            totals
+                .by_type
+                .iter()
+                .map(|(_, _, count)| count)
+                .sum::<u64>(),
+            totals.stored
+        );
+        assert_eq!(totals.by_verdict.values().sum::<u64>(), totals.stored);
+        assert_eq!(totals.by_type.len(), AI_EVENTS.len());
+    }
+
+    // 시나리오 20: ai 명령 인자 검사 (COUNT는 1000000 / 5000000만, PARALLEL 생략 시 100)
+    #[test]
+    fn ai_args() {
+        let parse = |values: &[&str]| {
+            parse_ai_args(&values.iter().map(|v| v.to_string()).collect::<Vec<_>>())
+        };
+
+        let config = parse(&["1", "1000000"]).unwrap();
+        assert_eq!(config.parallel, 100);
+        assert_eq!(config.total_per_run(), 1_000_000);
+
+        let config = parse(&["1", "5,000,000", "1000"]).unwrap();
+        assert_eq!(config.parallel, 1000);
+        assert_eq!(config.total_per_run(), 5_000_000);
+
+        assert!(parse(&["1", "123"]).is_err()); // 허용하지 않는 건수
+        assert!(parse(&["1"]).is_err()); // COUNT 없음
+        assert!(parse(&["1", "1000000", "100", "x"]).is_err()); // 인자 초과
+        assert!(parse(&["x", "1000000"]).is_err()); // START_ID가 숫자가 아님
     }
 }

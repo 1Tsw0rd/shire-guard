@@ -6,8 +6,8 @@ set -e
 OLLAMA_URL="http://localhost:11434/api/chat"
 
 # 번호로 호출할 모델
-MODEL_1="qwen2.5:14b-instruct"
-MODEL_2="hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF"
+MODEL_1="gemma4:12b"
+MODEL_2="phi4:14b"
 
 # --ko 옵션 사용 시 응답 번역에 쓰는 모델
 TRANSLATE_MODEL="translategemma:12b"
@@ -86,11 +86,11 @@ print_help() {
   echo ""
   echo "2. 실행"
   echo "  ./test.ollama.sh ollama list          번호별 모델명 확인"
-  echo "  ./test.ollama.sh ollama [번호|모델명] [--ko] AI 위험도 분석 테스트 (1:Qwen 2:Foundation-Sec, --ko: 한국어 번역)"
+  echo "  ./test.ollama.sh ollama [번호|모델명] [--ko] AI 위험도 분석 테스트 (1: gemma4:12b 2: phi4:14b, --ko: 한국어 번역)"
   echo ""
   echo "   사용 예시: "
-  echo "  ./test.ollama.sh ollama 1             Qwen2.5 14B 호출"
-  echo "  ./test.ollama.sh ollama 2             Foundation-Sec 8B 호출"
+  echo "  ./test.ollama.sh ollama 1             gemma4:12b 호출"
+  echo "  ./test.ollama.sh ollama 2             phi4:14b 호출"
   echo "  ./test.ollama.sh ollama <모델명>       설치된 다른 모델이 있는 경우 직접 지정"
   echo "  ./test.ollama.sh ollama 1 --ko        응답을 한국어로 번역"
   echo "                                        설치: docker exec -it ollama ollama pull $TRANSLATE_MODEL"

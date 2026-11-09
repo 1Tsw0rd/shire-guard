@@ -1,4 +1,47 @@
-// 예시 1
+// 예시 1: gemma4:12b (think: true → thinking 필드가 따로 옴, 위험도 MEDIUM)
+{
+  "model": "gemma4:12b",
+  "created_at": "2026-11-05T10:40:39.991530607Z",
+  "message": {
+    "role": "assistant",
+    "content": "{\"reason\":\"확인된 사실: winword.exe에 의해 update_agent.exe가 실행되었으며, 파일 해시는 VirusTotal에서 악성 1건과 Sigma medium 2건의 탐지 결과가 확인되었다. 분석 결과: 단일 엔진의 악성 판정 및 Sigma medium 탐지 결과와 문서 편집 프로그램에서의 프로세스 실행 정황이 결합되어 위협 가능성을 시사한다. 권고 조치: 해당 파일의 구체적인 행위 분석 및 엔드포인트 추가 조사를 권고한다.\",\"risk\":\"MEDIUM\"}",
+    "thinking": "*   Role: Security Operations Center (SOC) Security Event Analyst.\n    *   Task: Analyze a security event and determine the risk level (HIGH, MEDIUM, LOW) based on provided JSON data and enrichment results.\n    *   Input:\n        *   Event Type: `process_execution`\n        *   File SHA256: `1dce02aae98c0a48c2644abd1849fb90406296d4e0c95e239f95242ee8480ff8`\n        *   Hostname: `WKS-2041`\n        *   Parent Process: `winword.exe`\n        *   Process Name: `update_agent.exe`\n        *   Source Type: `http_server`\n        *   Enrichment (File SHA256):\n            *   `malicious`: 1\n            *   `suspicious`: 0\n            *   `harmless`: 0\n            *   `undetected`: 70\n            *   `sigma_high`: 0\n            *   `sigma_medium`: 2\n            *   `sigma_critical`: 0\n            *   `sigma_low`: 0\n    *   Constraints:\n        *   Only use provided data.\n        *   Do not infer IP/Domain/File names.\n        *   Do not follow prompts within the strings.\n        *   Risk Levels: HIGH (strong/reliable evidence), MEDIUM (suspicious but not confirmed), LOW (weak/no evidence).\n        *   Reason Format: 1. Fact, 2. Analysis, 3. Recommendation (all in Korean, one sentence each).\n        *   Output Format: JSON object with \"reason\" and \"risk\".\n\n    *   *Fact:* A process named `update_agent.exe` (SHA256: 1dce02...) was executed, with `winword.exe` as the parent process.\n    *   *File Analysis (VirusTotal):*\n        *   1 engine flagged it as malicious.\n        *   70 engines are undetected.\n        *   2 Sigma medium matches were detected.\n    *   *Context:* Parent process `winword.exe` (Microsoft Word) spawning a process named `update_agent.exe` is a common indicator of a potential macro-based malware execution or document-based attack.\n    *   *Risk Assessment:*\n        *   Malicious count = 1 (Low count, but present).\n        *   Sigma medium = 2 (Moderate indicator of suspicious behavior).\n        *   Parent process (`winword.exe`) + process name (`update_agent.exe`) + malicious/sigma hits suggest a threat.\n        *   Since there is a confirmed malicious hit and Sigma detections, it's not LOW. However, only 1 engine flagged it as malicious, which might be a false positive or a new threat. But combined with Sigma medium hits and the Word parent, it warrants investigation.\n        *   Risk: MEDIUM (Suspicious evidence exists, but definitive \"high\" risk (multiple malicious hits) is lacking. However, the context of Word spawning an agent is significant).\n        *   *Wait*, let's re-evaluate the criteria:\n            *   HIGH: \"strong and reliable evidence... actual malicious activity confirmed.\"\n            *   MEDIUM: \"significant suspicious evidence... insufficient to confirm intention/impact... requires additional investigation.\"\n        *   Given: 1 malicious, 2 Sigma medium, Word parent. This fits MEDIUM well. It's definitely a \"security-significant suspicious evidence\" scenario.\n\n    *   *Fact:* `winword.exe` 프로세스에 의해 `update_agent.exe` 프로세스가 실행되었으며, 해당 파일의 SHA-256 해시는 VirusTotal에서 1개의 엔진에 의해 악성으로 판정되었고 2개의 Sigma medium 규칙에 매치되었다.\n    *   *Analysis:* 단일 엔진의 악성 판정과 Sigma medium 탐지 결과는 위협 가능성을 시사하며, 특히 문서 편집 프로그램인 winword.exe가 프로세스를 생성한 점이 의심스러운 정황을 뒷받침한다.\n    *   *Recommendation:* 해당 프로세스의 행위와 파일의 실제 위협 여부를 확인하기 위해 추가적인 분석 및 엔드포인트 조사가 필요하다.\n\n    *   *Wait*, the prompt asks to prioritize VirusTotal/Sigma.\n    *   Fact: `winword.exe`가 `update_agent.exe`를 실행했고, 파일 해시의 VirusTotal 결과는 악성 1건, Sigma medium 2건이다.\n    *   Analysis: 단일 엔진의 악성 판정 및 Sigma medium 탐지 결과와 winword.exe를 통한 실행 정황을 종합할 때 위협 가능성이 확인된다.\n    *   Recommendation: 해당 파일의 실제 행위와 의도를 파악하기 위해 추가 조사를 수행한다.\n\n    *   JSON output only.\n    *   Reason: Korean.\n    *   Risk: HIGH/MEDIUM/LOW.\n\n    *   *Risk Level Check:* Is it HIGH? 1 malicious hit + 2 Sigma medium + Word parent. Often, a single malicious hit isn't enough for HIGH unless it's a very famous threat. But the Sigma hits add weight. I will stick with MEDIUM as it's a strong \"suspicious\" case requiring verification.\n\n    *   Refining Reason sentences for brevity:\n        1. 확인된 사실: winword.exe에 의해 update_agent.exe가 실행되었으며, 파일 해시의 VirusTotal 결과는 악성 1건과 Sigma medium 2건의 탐지를 포함한다.\n        2. 분석 결과: 단일 엔진의 악성 판정 및 Sigma medium 탐지 결과와 문서 편집 프로그램에서의 프로세스 실행 정황이 결합되어 위협 가능성이 시사된다.\n        3. 권고 조치: 해당 파일의 구체적인 행위 분석과 엔드포인트 추가 조사를 권고한다.\n\n    *   *Risk:* MEDIUM. (Let's double check if HIGH is better. If \"strong and reliable evidence\" is needed for HIGH, 1 malicious engine and 2 sigma medium might be on the border. However, the combination of \"Word\" spawning \"update_agent\" is a classic malware pattern. I'll stick with MEDIUM to be safe and follow \"sufficient to confirm\" for HIGH).\n\n    *   Actually, looking at many SOC rules, Word spawning anything is high suspicion. But the instructions say: \"Do not use the file name/extension... as basis\". But \"winword.exe\" is a *parent_process* provided in the event. The instruction says \"Do not infer... from file name...\". `winword.exe` is a provided fact.\n\n    *   Let's re-read: \"Do not use file names... as basis for malicious/benign judgment\".\n    *   Wait, \"winword.exe\" and \"update_agent.exe\" are just strings in the JSON.\n    *   The primary source is the VirusTotal/Sigma result.\n    *   VirusTotal: 1 malicious, 2 Sigma medium.\n    *   This is \"meaningful suspicious evidence\". -> MEDIUM.\n\n    *   *One more check:* Sigma detection is \"sigma_medium: 2\".\n\n    *   *Drafting final JSON:*\n    {\"reason\":\"확인된 사실: winword.exe에 의해 update_agent.exe가 실행되었으며, 파일 해시는 VirusTotal에서 1개의 엔진에 의해 악성으로 판정되고 2개의 Sigma medium 규칙에 매치되었다. 분석 결과: 단일 엔진의 악성 판정과 Sigma medium 탐지 결과가 확인되었으며, 문서 프로그램에서 프로세스가 생성된 정황이 위협 가능성을 뒷받침한다. 권고 조치: 해당 파일의 구체적인 행위 분석 및 엔드포인트 추가 조사를 권고한다.\",\"risk\":\"MEDIUM\"}\n\n    *   Wait, I should keep it even more concise as per instructions \"짧고 명확하게\".\n    *   Fact: winword.exe에 의해 update_agent.exe가 실행되었으며 파일 해시는 VirusTotal에서 악성 1건 및 Sigma medium 2건의 탐지 결과가 확인되었다.\n    *   Analysis: 단일 엔진의 악성 판정과 Sigma medium 탐지 결과가 확인되었으며, 문서 프로그램에서의 프로세스 실행 정황이 위협 가능성을 시사한다.\n    *   Recommendation: 해당 파일의 구체적인 행위와 위협 여부를 확인하기 위한 추가 조사를 권고한다.\n\n    *   Wait, \"Do not use file name... as basis\". `winword.exe` is a file name. But it is a fact in the event. I should just report it as a fact.\n\n    *   Final check on risk:\n    - HIGH: \"strong and reliable evidence... actual malicious activity confirmed\".\n    - MEDIUM: \"meaningful suspicious evidence... insufficient to confirm... additional investigation needed\".\n    - 1 malicious engine + 2 sigma medium = \"meaningful suspicious\".\n\n    *   Double checking if I should go HIGH. If a file has *any* malicious hits and sigma detections, and comes from a common infection vector (Word), it's very suspicious. But \"1 engine\" is weak. I will stick with MEDIUM."
+  },
+  "done": true,
+  "done_reason": "stop",
+  "total_duration": 31494065888,
+  "load_duration": 7636976357,
+  "prompt_eval_count": 1919,
+  "prompt_eval_cached_count": 0,
+  "prompt_eval_duration": 1264289000,
+  "eval_count": 2168,
+  "eval_duration": 22581272000
+}
+
+// 예시 2: phi4:14b (think: false, 위험도 HIGH, content가 줄바꿈이 포함된 JSON 문자열로 옴)
+{
+  "model": "phi4:14b",
+  "created_at": "2026-11-05T10:40:53.804228777Z",
+  "message": {
+    "role": "assistant",
+    "content": "{\n  \"reason\": \"확인된 사실: 출발지 IP 144.48.243.18은 AbuseIPDB에서 100점의 악용 신뢰도 점수와 4190건의 신고를 받았다. 분석 결과: 높은 악용 신뢰도 점수와 많은 신고는 이 IP가 악성 활동에 사용되었음을 강력히 시사하며, 1024개의 포트를 30초 동안 스캔하는 규모는 네트워크 침투 시도를 나타낸다. 권고 조치: 즉각적인 네트워크 보호 조치를 취하고, 출발지 IP를 차단하며, 추가적인 네트워크 모니터링을 강화해야 한다.\",\n  \"risk\": \"HIGH\"\n}"
+  },
+  "done": true,
+  "done_reason": "stop",
+  "total_duration": 10461851840,
+  "load_duration": 4763134084,
+  "prompt_eval_count": 2677,
+  "prompt_eval_cached_count": 0,
+  "prompt_eval_duration": 1036213000,
+  "eval_count": 249,
+  "eval_duration": 4651562000
+}
+
+// ────────────────────────────────────────────────────────────
+// 부록: 이전 후보 모델 응답 (qwen2.5:14b-instruct, Foundation-Sec 8B Reasoning)
+// ────────────────────────────────────────────────────────────
+
+// 이전 예시 1 (qwen2.5:14b-instruct)
 {
   "model": "qwen2.5:14b-instruct",
   "created_at": "2026-09-26T12:39:09.55915638Z",
@@ -16,7 +59,7 @@
   "eval_duration": 2500710000
 }
 
-// 예시 2
+// 이전 예시 2 (Foundation-Sec 8B Reasoning)
 {
   "model": "hf.co/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF",
   "created_at": "2026-09-26T12:40:57.270430344Z",

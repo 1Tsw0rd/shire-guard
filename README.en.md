@@ -22,7 +22,7 @@ and attaches the results decided by user-defined Playbooks (condition node / res
 
 > **Project context**
 >
-> - Development period: about 2 months
+> - Development start date: 2026-09-03
 >
 > - Development method: AI pair programming (AI was used for comparing design alternatives / code review, and all code was reviewed and tested personally before being applied)
 >
@@ -65,7 +65,7 @@ and attaches the results decided by user-defined Playbooks (condition node / res
 | Message Broker | Apache Kafka (KRaft) / RedPanda |
 | Cache / Lock | Redis / Dragonfly |
 | Storage | OpenSearch, ClickHouse, PostgreSQL (SQLx) |
-| AI | Ollama (Qwen2.5 14B Instruct, Foundation-Sec 8B Reasoning) |
+| AI | Ollama (Gemma 4 12B, Phi-4 14B) |
 | Threat Intelligence | AbuseIPDB, VirusTotal, DNS |
 | Monitoring | Prometheus, Grafana, Loki, cAdvisor, JMX Exporter |
 | Infra | Docker Compose |
@@ -98,10 +98,15 @@ shire-guard/
 │   ├── assets/                  # Document attachments (images, mp4, etc.)
 │   ├── notes/                   # Notes written during development
 │   ├── samples/                 # Original examples of external API · AI responses
-│   ├── API.md                   # API specification
-│   └── DEVELOPMENT.md           # Development environment · running · testing guide
-├── scripts/                     # loadgen (load test) · dbbench (DB storage performance) · container management · Ollama test scripts
-└── README.md
+│   ├── API.md                   # API specification (Korean)
+│   ├── API.en.md                # API specification (English)
+│   ├── DEMO.md                  # Demo document by scenario (including videos, Korean)
+│   ├── DEMO.en.md               # Demo document by scenario (English)
+│   ├── DEVELOPMENT.md           # Development environment · running · testing guide (Korean)
+│   └── DEVELOPMENT.en.md        # Development environment · running · testing guide (English)
+├── scripts/                     # Test · operation tools (load test, DB performance measurement, monitoring, etc.)
+├── README.md                    # README (Korean)
+└── README.en.md
 ```
 
 ---
@@ -172,7 +177,7 @@ flowchart TB
 | [9] | PostgreSQL | Table `playbooks`: playbook settings / `storage_failures`: originals of logs rejected by OpenSearch and unprocessable messages |
 | [10] | Threat Intel | External lookup targets: AbuseIPDB (IP), DNS (domain), VirusTotal (file hash) |
 | [11] | Redis / Dragonfly | Cache for Enrichment and playbook AI response node results (Redis/Dragonfly can be selected with the environment variable `CACHE_BACKEND`) |
-| [12] | Ollama | Local LLM for the AI response node (models used: Qwen2.5 14B Instruct, Foundation-Sec 8B Reasoning) |
+| [12] | Ollama | Local LLM for the AI response node (models used: gemma4:12b, phi4:14b) |
 
 ---
 
@@ -219,7 +224,7 @@ flowchart TB
 
 | No. | Component | Role |
 |---|---|---|
-| [1] | Rust Backend | Exposes application Metrics such as event receive·parse·failure counts, broker connection status, and active broker and cache settings through the `/metrics` endpoint |
+| [1] | Rust Backend | Exposes application Metrics such as event receive·parse·storage counts, Kafka commit offset·LAG, and broker connection status through the `/metrics` endpoint |
 | [2] | Vector | Exposes Vector internal Metrics such as the numbers of received·sent·discarded events and buffer usage through the Prometheus Exporter |
 | [3] | Kafka |  Exposes Kafka broker and topic related Metrics through the JMX Exporter |
 | [4] | RedPanda | Exposes the broker's own Metrics through the `/public_metrics` endpoint |
@@ -770,15 +775,15 @@ flowchart LR
 
 - Like the response node, it is located at the very end of the playbook composition; for events that are hard to define with rules and are expected to be few in number, a local LLM (Ollama) judges the risk level (HIGH / MEDIUM / LOW)
 - The judged risk level is converted into the action configured in the playbook (a risk level not in the mapping produces no decision)
-- For AI errors · exceeding 60 seconds · cache failures, the action is always decided as HOLD (subject to confirmation by the person in charge)
-- There are currently 2 available AI models: `qwen2.5:14b-instruct`, `Foundation-Sec-8B-Reasoning`
+- For AI errors · exceeding 300 seconds · cache failures · exceeding the output token limit, the action is always decided as HOLD (subject to confirmation by the person in charge)
+- There are currently 2 available AI models: `gemma4:12b (uses thinking)`, `phi4:14b (does not use thinking)`
 
 ```jsonc
 {
   "type": "ai_response",
 
   // Ollama model to use for AI analysis
-  "model": "qwen2.5:14b-instruct",
+  "model": "gemma4:12b",
 
   // Analysis instruction given to the AI
   // The event to be analyzed + Enrichment results are automatically delivered together
@@ -794,7 +799,7 @@ flowchart LR
 
 **AI Call Handling**
 
-- Calls are made one at a time to match Ollama's default concurrent processing count (`OLLAMA_NUM_PARALLEL=1`)
+- The total number of concurrent AI calls in the Backend is limited to the same value as Ollama's concurrent processing count (`OLLAMA_NUM_PARALLEL`)
 
 ```mermaid
 flowchart TD
@@ -814,7 +819,7 @@ flowchart TD
     CACHE -->|"Miss"| SF{"Is an AI request with the same input<br/>already in progress?<br/>(model · prompt · Evidence)"}
 
     SF -->|"Yes"| JOIN["Wait for the existing request to complete<br/>(prevents duplicate Ollama calls)"]
-    SF -->|"No"| Q["Wait for the Ollama call turn<br/>(max 1 concurrent call)"]
+    SF -->|"No"| Q["Wait for the Ollama call turn<br/>(max OLLAMA_NUM_PARALLEL concurrent calls)"]
 
     Q --> OL["Ollama call"]
     OL -->|"Success"| SAVE
@@ -828,7 +833,7 @@ flowchart TD
 **AI Response Node Result Example** (`playbook_result.playbooks[]` item)
 
 ```jsonc
-// On success: the risk (HIGH) returned by the AI is decided as DENY according to the actions mapping
+// Success example: the risk (HIGH) returned by the AI is decided as DENY according to the actions mapping
 {
   "playbook_id": 3,
   "name": "애매한 파일 AI 분석",  // "Ambiguous file AI analysis"
@@ -837,12 +842,13 @@ flowchart TD
   "ai_result": {
     "status": "success",
     "risk": "HIGH",
-    "reason": "The file name 'invoice.exe' is suspicious because it ends with '.exe' ...",
-    "model": "qwen2.5:14b-instruct"
+    // (The reason is kept in Korean as in the stored data. Meaning: "Confirmed facts: the file hash (784c88...) was detected as malicious by 3 engines on VirusTotal. Analysis: a direct malicious verdict on the file hash strongly suggests that the file is very likely to pose a security threat. Recommended action: delete the file immediately and perform an additional detailed inspection of the system.")
+    "reason": "확인된 사실: 파일 해시(784c88f2297ffe774b9b1330f12690d59f9d08ce89e97a74debd687de9ed2cd7)가 VirusTotal에서 3개의 엔진에 의해 악성으로 탐지되었다. 분석 결과: 파일 해시에 대한 직접적인 악성 판정은 해당 파일이 보안 위협을 유발할 가능성이 매우 높음을 강력하게 시사한다. 권고 조치: 해당 파일을 즉각 삭제하고 해당 시스템에 대한 추가적인 정밀 점검을 수행해야 한다.",
+    "model": "gemma4:12b"
   }
 }
 
-// On failure: AI errors · timeouts · cache failures are decided as HOLD regardless of the mapping (error is recorded without risk · reason)
+// Failure example: AI errors · timeouts · cache failures · exceeding the output token limit are decided as HOLD regardless of the mapping (error is recorded without risk · reason)
 {
   "playbook_id": 3,
   "name": "애매한 파일 AI 분석",  // "Ambiguous file AI analysis"
@@ -851,7 +857,7 @@ flowchart TD
   "ai_result": {
     "status": "error",
     "error": "timeout",
-    "model": "qwen2.5:14b-instruct"
+    "model": "gemma4:12b"
   }
 }
 ```
@@ -1046,6 +1052,8 @@ sequenceDiagram
 
 ### Throughput Measurement Results
 
+> Throughput was measured with the AI response node disabled
+
 | Section | Throughput | Notes |
 |---|---|---|
 | Rust processing (Enrichment → Playbook) | about 110,000/s | Enrichment cache hit condition |
@@ -1063,7 +1071,7 @@ sequenceDiagram
 
 - **Throughput per section**: measured by applying maximum load to each section, confirming about 100,000 events per second
 - **Overall throughput**: lower than the individual sections because all services share the CPU of 1 laptop
-- **Loss rate**: 0% in the test of forced termination during processing of 1 million events followed by a restart
+- **Loss rate**: 0% in the recovery test after stopping Kafka · force-terminating Rust during processing of 5 million events (including with the AI response node enabled)
 
 ---
 
@@ -1072,4 +1080,4 @@ sequenceDiagram
 - [ ] **Playbook create / update / delete API**: when a playbook create/update/delete occurs, replace the entire list of active playbooks with a write Lock (events being evaluated keep using the existing list, so processing does not stop)
 - [ ] **Query API**: support full query / conditional search of event logs and playbook logs in OpenSearch
 - [ ] **Report generation**: generate HWPX / DOCX reports with ClickHouse aggregation
-- [ ] **Review jev / Laya**
+- [ ] **Research a dedicated queue for the AI response node**: Separate the processing of Playbook response nodes and AI response nodes to resolve bottlenecks caused by AI response delays and keep processing regular events
